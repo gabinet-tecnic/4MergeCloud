@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="utf-8">
+  <title>Generar icones Merge Cloud</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; padding: 30px; gap: 20px; }
+    button { padding: 12px 28px; font-size: 16px; background: #e07820; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #c06010; }
+    canvas { border: 2px solid #444; border-radius: 12px; }
+    p { color: #aaa; max-width: 500px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2>Generador d'icones — Merge Cloud</h2>
+  <p>Fes clic al botó per descarregar les dues icones PNG necessàries per a la PWA. Desa-les a la carpeta <strong>icons/</strong>.</p>
+  <canvas id="c" width="512" height="512"></canvas>
+  <button onclick="generateAll()">Descarregar icon-192.png i icon-512.png</button>
+
+  <script>
+    function drawIcon(canvas, size) {
+      const ctx = canvas.getContext('2d');
+      canvas.width = size;
+      canvas.height = size;
+      const r = size * 0.156; // border-radius
+
+      // Fons gradient
+      const grad = ctx.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, '#0f1e3a');
+      grad.addColorStop(1, '#1a3560');
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(size - r, 0);
+      ctx.quadraticCurveTo(size, 0, size, r);
+      ctx.lineTo(size, size - r);
+      ctx.quadraticCurveTo(size, size, size - r, size);
+      ctx.lineTo(r, size);
+      ctx.quadraticCurveTo(0, size, 0, size - r);
+      ctx.lineTo(0, r);
+      ctx.quadraticCurveTo(0, 0, r, 0);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Punts decoratius
+      const dots = [
+        [0.156, 0.352], [0.215, 0.303], [0.186, 0.410], [0.254, 0.371], [0.225, 0.440], [0.117, 0.391],
+        [0.762, 0.586], [0.820, 0.547], [0.791, 0.645], [0.859, 0.605], [0.840, 0.674], [0.723, 0.625],
+        [0.391, 0.156], [0.449, 0.127], [0.420, 0.195], [0.488, 0.166],
+        [0.586, 0.820], [0.645, 0.850], [0.615, 0.791], [0.674, 0.811],
+      ];
+      ctx.fillStyle = 'rgba(42,74,128,0.6)';
+      dots.forEach(([x, y]) => {
+        ctx.beginPath();
+        ctx.arc(x * size, y * size, size * 0.014, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Text MC
+      const fs = size * 0.43;
+      ctx.font = `900 ${fs}px "Arial Black", Arial, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // M
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('M', size * 0.38, size * 0.54);
+      // C
+      ctx.fillStyle = '#e07820';
+      ctx.fillText('C', size * 0.68, size * 0.54);
+
+      // Línia de mesura
+      const ly = size * 0.723;
+      const lx1 = size * 0.176;
+      const lx2 = size * 0.824;
+      ctx.setLineDash([size * 0.023, size * 0.012]);
+      ctx.strokeStyle = 'rgba(224,120,32,0.7)';
+      ctx.lineWidth = size * 0.008;
+      ctx.beginPath();
+      ctx.moveTo(lx1, ly);
+      ctx.lineTo(lx2, ly);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(224,120,32,0.9)';
+      [lx1, lx2].forEach(x => {
+        ctx.beginPath();
+        ctx.arc(x, ly, size * 0.014, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Preview
+    const preview = document.getElementById('c');
+    drawIcon(preview, 512);
+
+    function downloadCanvas(canvas, filename) {
+      const a = document.createElement('a');
+      a.download = filename;
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+    }
+
+    function generateAll() {
+      const c192 = document.createElement('canvas');
+      drawIcon(c192, 192);
+      downloadCanvas(c192, 'icon-192.png');
+
+      setTimeout(() => {
+        const c512 = document.createElement('canvas');
+        drawIcon(c512, 512);
+        downloadCanvas(c512, 'icon-512.png');
+      }, 500);
+    }
+  </script>
+</body>
+</html>
