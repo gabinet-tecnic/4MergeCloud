@@ -850,6 +850,262 @@ async function applyICP() {
   alert(msg);
 }
 // ─────────────────────────────────────────────────────────────────────────────
+// ── DXF Overlay import ────────────────────────────────────────────────────────
+
+const dxfOverlays = [];
+
+const DXF_LAYER_COLORS = [
+  0x00ccff, 0xff9900, 0x00ff88, 0xff4488,
+  0xffff00, 0x88ffff, 0xff8800, 0xaaffaa,
+];
+
+function parseDXF(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const pairs = [];
+  for (let i = 0; i + 1 < lines.length; i += 2)
+    pairs.push([parseInt(lines[i].trim(), 10), lines[i + 1].trim()]);
+
+  const entities = [];
+  let inEntities = false;
+  let i = 0;
+
+  while (i < pairs.length) {
+    const [code, val] = pairs[i];
+    if (code === 0 && val === 'SECTION') {
+      inEntities = (pairs[i + 1]?.[1] === 'ENTITIES');
+      i += 2; continue;
+    }
+    if (code === 0 && val === 'ENDSEC') { inEntities = false; i++; continue; }
+    if (!inEntities || code !== 0 || val === 'EOF') { i++; continue; }
+
+    const type = val; i++;
+    const raw = {};
+    while (i < pairs.length && pairs[i][0] !== 0) {
+      const [c, v] = pairs[i];
+      if (!raw[c]) raw[c] = [];
+      raw[c].push(v);
+      i++;
+    }
+
+    const ent = { type, layer: raw[8]?.[0] || '0', pts: [], closed: false };
+
+    if (type === 'POINT') {
+      ent.pts = [{ x: +raw[10]?.[0]||0, y: +raw[20]?.[0]||0, z: +raw[30]?.[0]||0 }];
+    } else if (type === 'LINE') {
+      ent.pts = [
+        { x: +raw[10]?.[0]||0, y: +raw[20]?.[0]||0, z: +raw[30]?.[0]||0 },
+        { x: +raw[11]?.[0]||0, y: +raw[21]?.[0]||0, z: +raw[31]?.[0]||0 },
+      ];
+    } else if (type === 'LWPOLYLINE') {
+      const xs = raw[10]||[], ys = raw[20]||[];
+      const elev = +raw[38]?.[0]||0;
+      ent.pts = xs.map((x,k) => ({ x:+x, y:+ys[k]||0, z:elev }));
+      ent.closed = (parseInt(raw[70]?.[0]||0) & 1) === 1;
+    } else if (type === 'POLYLINE') {
+      ent.pts = []; ent._poly = true;
+      ent.closed = (parseInt(raw[70]?.[0]||0) & 1) === 1;
+    } else if (type === 'VERTEX') {
+      ent.pts = [{ x:+raw[10]?.[0]||0, y:+raw[20]?.[0]||0, z:+raw[30]?.[0]||0 }];
+    } else if (type === 'CIRCLE') {
+      const cx=+raw[10]?.[0]||0, cy=+raw[20]?.[0]||0, cz=+raw[30]?.[0]||0, r=+raw[40]?.[0]||0;
+      ent.pts = Array.from({length:48},(_,k)=>({
+        x: cx+r*Math.cos(2*Math.PI*k/48), y: cy+r*Math.sin(2*Math.PI*k/48), z:cz }));
+      ent.closed = true;
+    } else if (type === 'ARC') {
+      const cx=+raw[10]?.[0]||0, cy=+raw[20]?.[0]||0, cz=+raw[30]?.[0]||0, r=+raw[40]?.[0]||0;
+      let a0=(+raw[50]?.[0]||0)*Math.PI/180, a1=(+raw[51]?.[0]||0)*Math.PI/180;
+      if (a1<=a0) a1+=2*Math.PI;
+      const N=Math.max(8,Math.round((a1-a0)/(Math.PI/24)));
+      ent.pts = Array.from({length:N+1},(_,k)=>{
+        const a=a0+(a1-a0)*k/N; return {x:cx+r*Math.cos(a),y:cy+r*Math.sin(a),z:cz};});
+    }
+    entities.push(ent);
+  }
+
+  // Uneix VERTEX amb el POLYLINE pare
+  const merged = [];
+  for (let k = 0; k < entities.length; k++) {
+    if (entities[k]._poly) {
+      const poly = {...entities[k], pts:[]};
+      k++;
+      while (k<entities.length && (entities[k].type==='VERTEX'||entities[k].type==='SEQEND')) {
+        if (entities[k].type==='VERTEX') poly.pts.push(entities[k].pts[0]);
+        k++;
+      }
+      k--;
+      merged.push(poly);
+    } else if (entities[k].type!=='VERTEX' && entities[k].type!=='SEQEND') {
+      merged.push(entities[k]);
+    }
+  }
+  return merged;
+}
+
+function loadDXFFile(text, filename) {
+  const entities = parseDXF(text);
+  if (!entities.length) { alert('DXF buit o format no reconegut.'); return; }
+
+  // Offset: centra respecte al primer núvol o al centroide del DXF
+  let ox=0, oy=0, oz=0;
+  let sx=0, sy=0, sz=0, np=0;
+  for (const e of entities) for (const p of e.pts) { sx+=p.x; sy+=p.y; sz+=p.z; np++; }
+  if (np>0) {
+    sx/=np; sy/=np; sz/=np;
+    if (clouds.length>0) {
+      const c=new THREE.Box3().setFromObject(clouds[0]).getCenter(new THREE.Vector3());
+      ox=sx-c.x; oy=sy-c.y; oz=sz-c.z;
+    } else { ox=sx; oy=sy; oz=sz; }
+  }
+
+  const group = new THREE.Group(); group.name = filename;
+  const layerMap = new Map(); let colorIdx=0;
+
+  for (const ent of entities) {
+    if (!layerMap.has(ent.layer))
+      layerMap.set(ent.layer, { color:DXF_LAYER_COLORS[colorIdx++%DXF_LAYER_COLORS.length], lv:[], pv:[] });
+    const L = layerMap.get(ent.layer);
+
+    if (ent.type==='POINT') {
+      const p=ent.pts[0];
+      L.pv.push(p.x-ox, p.z-oz, -(p.y-oy));
+    } else if (ent.pts.length>=2) {
+      const m=ent.pts.length;
+      for (let j=0;j<m-1;j++) {
+        const a=ent.pts[j],b=ent.pts[j+1];
+        L.lv.push(a.x-ox,a.z-oz,-(a.y-oy), b.x-ox,b.z-oz,-(b.y-oy));
+      }
+      if (ent.closed && m>2) {
+        const a=ent.pts[m-1],b=ent.pts[0];
+        L.lv.push(a.x-ox,a.z-oz,-(a.y-oy), b.x-ox,b.z-oz,-(b.y-oy));
+      }
+    }
+  }
+
+  const colors=[];
+  for (const [,L] of layerMap) {
+    colors.push(L.color);
+    if (L.lv.length) {
+      const g=new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.Float32BufferAttribute(L.lv,3));
+      group.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:L.color})));
+    }
+    if (L.pv.length) {
+      const g=new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.Float32BufferAttribute(L.pv,3));
+      group.add(new THREE.Points(g,new THREE.PointsMaterial({color:L.color,size:0.05})));
+    }
+  }
+
+  scene.add(group);
+  dxfOverlays.push({group, name:filename, visible:true, colors});
+  updateDXFList();
+}
+
+function updateDXFList() {
+  const panel = document.getElementById('dxfListPanel');
+  if (!panel) return;
+  panel.innerHTML='';
+  dxfOverlays.forEach((ov,idx) => {
+    const div = document.createElement('div');
+    div.className='dxf-item';
+    const hex='#'+ov.colors[0].toString(16).padStart(6,'0');
+    div.innerHTML=`<span class="dxf-color" style="background:${hex}"></span>`
+      +`<span class="dxf-name" title="${ov.name}">${ov.name}</span>`
+      +`<span class="dxf-eye">${ov.visible?'👁':'🚫'}</span>`
+      +`<span class="dxf-del">✕</span>`;
+    div.querySelector('.dxf-eye').onclick=()=>{
+      ov.visible=!ov.visible; ov.group.visible=ov.visible; updateDXFList();};
+    div.querySelector('.dxf-del').onclick=()=>{
+      scene.remove(ov.group);
+      ov.group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});
+      dxfOverlays.splice(idx,1); updateDXFList();};
+    panel.appendChild(div);
+  });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Statistical Outlier Removal ───────────────────────────────────────────────
+
+async function removeNoiseFromCloud(cloud, K=10, sigmaMultiplier=2.0) {
+  cloud.updateMatrixWorld(true);
+  const pos=cloud.geometry.getAttribute('position');
+  const col=cloud.geometry.getAttribute('color');
+  const n=pos.count;
+  if (n<K+1) return 0;
+
+  const bb=new THREE.Box3().setFromObject(cloud);
+  const cell=Math.max(0.001,(bb.max.clone().sub(bb.min).length()/Math.cbrt(n))*3);
+
+  const pts=[];
+  const v=new THREE.Vector3();
+  for (let i=0;i<n;i++) { v.fromBufferAttribute(pos,i); pts.push({x:v.x,y:v.y,z:v.z}); }
+
+  // Hash espacial
+  const hash=new Map();
+  for (let i=0;i<n;i++) {
+    const key=`${Math.floor(pts[i].x/cell)},${Math.floor(pts[i].y/cell)},${Math.floor(pts[i].z/cell)}`;
+    if(!hash.has(key)) hash.set(key,[]);
+    hash.get(key).push(i);
+  }
+
+  function knnDist(idx) {
+    const p=pts[idx];
+    const kx=Math.floor(p.x/cell),ky=Math.floor(p.y/cell),kz=Math.floor(p.z/cell);
+    const ds=[];
+    for (let r=1;r<=3&&ds.length<K;r++) {
+      for (let dx=-r;dx<=r;dx++) for (let dy=-r;dy<=r;dy++) for (let dz=-r;dz<=r;dz++) {
+        if (Math.abs(dx)<r&&Math.abs(dy)<r&&Math.abs(dz)<r) continue;
+        const bucket=hash.get(`${kx+dx},${ky+dy},${kz+dz}`);
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j===idx) continue;
+          ds.push(Math.sqrt((pts[j].x-p.x)**2+(pts[j].y-p.y)**2+(pts[j].z-p.z)**2));
+        }
+      }
+      if (r===1&&ds.length>=K) break;
+    }
+    ds.sort((a,b)=>a-b);
+    const take=ds.slice(0,K);
+    return take.length ? take.reduce((s,d)=>s+d,0)/take.length : Infinity;
+  }
+
+  // Estadística sobre mostreig (màx 20k)
+  const step=Math.max(1,Math.floor(n/20000));
+  const sample=[];
+  for (let i=0;i<n;i+=step) sample.push(knnDist(i));
+  const mu=sample.reduce((s,d)=>s+d,0)/sample.length;
+  const std=Math.sqrt(sample.reduce((s,d)=>s+(d-mu)**2,0)/sample.length);
+  const thr=mu+sigmaMultiplier*std;
+
+  // Filtre complet amb progress
+  const newPos=[],newCol=[];
+  const CHUNK=30000;
+  for (let i=0;i<n;i++) {
+    if (knnDist(i)<=thr) {
+      newPos.push(pos.getX(i),pos.getY(i),pos.getZ(i));
+      if (col) newCol.push(col.getX(i),col.getY(i),col.getZ(i));
+    }
+    if (i%CHUNK===CHUNK-1) {
+      document.getElementById('loadingBadge').textContent=
+        `⏳ Noise filter… ${Math.round(i/n*100)}%`;
+      await new Promise(r=>setTimeout(r,0));
+    }
+  }
+
+  const removed=n-newPos.length/3;
+  if (!removed) return 0;
+
+  pushUndo(cloud,true);
+  const ng=new THREE.BufferGeometry();
+  ng.setAttribute('position',new THREE.Float32BufferAttribute(newPos,3));
+  if (newCol.length) ng.setAttribute('color',new THREE.Float32BufferAttribute(newCol,3));
+  ng.computeBoundingBox(); ng.computeBoundingSphere();
+  cloud.geometry.dispose();
+  cloud.geometry=ng;
+  cloud.material.needsUpdate=true;
+  updateRaycasterThreshold();
+  return removed;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Detecta cel·les locals de 50cm amb color distintiu.
 // Cada cel·la és un punt de referència precís (radi ~25cm vs metres d'un centroide global).
@@ -1565,6 +1821,43 @@ function setupUI() {
   };
 
   document.getElementById('btnICP').onclick = () => { applyICP(); };
+
+  // ── DXF import ──
+  document.getElementById('dxfInput').onchange = (e) => {
+    for (const file of e.target.files) {
+      const reader = new FileReader();
+      reader.onload = ev => loadDXFFile(ev.target.result, file.name);
+      reader.readAsText(file, 'utf-8');
+    }
+    e.target.value = '';
+  };
+
+  // ── Noise filter ──
+  const sigmaNoise = document.getElementById('noiseSigma');
+  const sigmaVal   = document.getElementById('noiseSigmaVal');
+  if (sigmaNoise) sigmaNoise.oninput = () => { sigmaVal.textContent = (+sigmaNoise.value).toFixed(1); };
+
+  document.getElementById('btnNoiseFilter').onclick = () => {
+    const panel = document.getElementById('noiseFilterPanel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  };
+
+  document.getElementById('btnApplyNoise').onclick = async () => {
+    const target = selectedCloud ? [selectedCloud] : clouds.filter(c => c.visible);
+    if (!target.length) { alert(T.noClouds); return; }
+    const K      = parseInt(document.getElementById('noiseK').value) || 10;
+    const sigma  = parseFloat(document.getElementById('noiseSigma').value) || 2.0;
+    const badge  = document.getElementById('loadingBadge');
+    badge.style.display = 'block';
+    badge.textContent   = '⏳ Noise filter…';
+    let totalRemoved = 0;
+    for (const cloud of target) {
+      totalRemoved += await removeNoiseFromCloud(cloud, K, sigma);
+    }
+    badge.style.display = 'none';
+    badge.textContent   = '⏳ Loading file...';
+    alert(`Noise filter done.\n${totalRemoved.toLocaleString()} points removed.`);
+  };
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (alignMode) cancelAlign();

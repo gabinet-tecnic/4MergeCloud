@@ -272,6 +272,54 @@
       white-space: nowrap;
     }
 
+    /* Noise filter panel */
+    #noiseFilterPanel {
+      display: none;
+      font-size: 11px;
+      background: #1a1a1a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 6px;
+      margin: 3px 0;
+    }
+    #noiseFilterPanel table { width: 100%; }
+    #noiseFilterPanel td { padding: 2px 2px; color: #bbb; }
+    #noiseFilterPanel input[type=number] {
+      width: 50px; font-size: 11px;
+      background: #333; color: #eee;
+      border: 1px solid #555; border-radius: 3px; padding: 2px 4px;
+    }
+
+    /* DXF overlay list */
+    #dxfInputLabel {
+      display: block; width: 100%; margin: 2px 0;
+      padding: 6px 8px; font-size: 12px;
+      background: #1a3a1a; color: #aea;
+      border: 1px solid #2a6a2a; border-radius: 4px;
+      cursor: pointer; text-align: center;
+    }
+    #dxfInputLabel:hover { background: #2a4a2a; }
+    #dxfInput { display: none; }
+    #dxfListPanel {
+      max-height: 80px; overflow-y: auto;
+      margin: 3px 0; font-size: 11px;
+    }
+    #dxfListPanel:empty::before {
+      content: 'No DXF loaded'; color: #666;
+      display: block; padding: 2px 4px; font-style: italic;
+    }
+    .dxf-item {
+      display: flex; align-items: center;
+      padding: 2px 4px; border-radius: 3px;
+      border: 1px solid transparent;
+    }
+    .dxf-item:hover { background: #3a3a3a; }
+    .dxf-color { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; margin-right: 5px; }
+    .dxf-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ccc; }
+    .dxf-eye { cursor: pointer; padding: 0 4px; flex-shrink: 0; font-size: 13px; }
+    .dxf-del { color: #f55; cursor: pointer; padding: 0 4px; flex-shrink: 0; font-size: 13px; }
+    .dxf-del:hover { color: #ff8888; }
+
     /* Auto-align panel */
     #autoAlignPanel {
       display: none;
@@ -343,6 +391,26 @@
     <div class="sep"></div>
     <button id="btnRectErase">&#9644; Rectangle erase</button>
     <button id="btnLassoErase">&#9999; Freehand erase</button>
+
+    <div class="sep"></div>
+    <button id="btnNoiseFilter">&#10022; Noise filter</button>
+    <div id="noiseFilterPanel">
+      <table>
+        <tr><td>Agressivitat:</td><td>
+          <input id="noiseSigma" type="range" min="0.5" max="5" step="0.1" value="2" style="width:70px;vertical-align:middle">
+          <span id="noiseSigmaVal">2.0</span>&#963;
+        </td></tr>
+        <tr><td>Ve&#239;ns K:</td><td>
+          <input id="noiseK" type="number" value="10" min="3" max="30">
+        </td></tr>
+      </table>
+      <button id="btnApplyNoise">Apply filter</button>
+    </div>
+
+    <div class="sep"></div>
+    <label id="dxfInputLabel" for="dxfInput">&#128208; Load DXF overlay</label>
+    <input type="file" id="dxfInput" multiple accept=".dxf">
+    <div id="dxfListPanel"></div>
 
     <div class="sep"></div>
     <button id="toggleMeasure">&#128207; Measure mode</button>
