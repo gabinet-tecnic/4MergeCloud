@@ -30,9 +30,6 @@ const T = (window.APP_LANG === 'en') ? {
 };
 
 let scene, camera, renderer, controls, transformControls;
-let secondaryCamera = null;
-let secondaryControls = null;
-let splitScreen = false;
 
 // Càmera ortogràfica (vistes planes)
 let orthoCamera = null;
@@ -42,6 +39,33 @@ let useOrtho = false;
 const clouds = [];
 let selectedCloud = null;
 let cloudTCMode = 'translate';
+
+// ── State machine ─────────────────────────────────────────────────────────────
+// MODE: 'none' | 'translate' | 'rotate' | 'clipbox_translate' | 'clipbox_rotate' | 'align' | 'measure'
+let appMode = 'none';
+
+function setMode(newMode) {
+  appMode = newMode;
+  updateModeBadge();
+}
+
+function updateModeBadge() {
+  const badge = document.getElementById('modeBadge');
+  if (!badge) return;
+  const labels = {
+    'none': '',
+    'translate': window.APP_LANG === 'en' ? 'MOVE CLOUD' : 'MOURE NÚVOL',
+    'rotate': window.APP_LANG === 'en' ? 'ROTATE CLOUD' : 'ROTAR NÚVOL',
+    'clipbox_translate': window.APP_LANG === 'en' ? 'MOVE CLIPPING BOX' : 'MOURE CAIXA DE TALL',
+    'clipbox_rotate': window.APP_LANG === 'en' ? 'ROTATE CLIPPING BOX' : 'ROTAR CAIXA DE TALL',
+    'align': '',   // el badge d'alineació ja ho gestiona
+    'measure': '', // el badge de mesura ja ho gestiona
+  };
+  const label = labels[appMode] || '';
+  badge.textContent = label;
+  badge.style.display = label ? 'block' : 'none';
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Clipping en temps real
 const LOCAL_CLIP_PLANES = [
@@ -86,7 +110,6 @@ function doUndo() {
   cloud.position.copy(state.position);
   cloud.quaternion.copy(state.quaternion);
   cloud.updateMatrixWorld(true);
-  // Sincronitza la caixa de tall si n'hi ha
   const box = cloud.userData.clipBox;
   if (box && cloud.userData.boxRelMatrix) {
     const m = new THREE.Matrix4().multiplyMatrices(cloud.matrixWorld, cloud.userData.boxRelMatrix);
@@ -151,12 +174,10 @@ function init() {
 
   transformControls.addEventListener('dragging-changed', (e) => {
     if (e.value) {
-      // Drag comença — desa estat per a undo (només si és un núvol)
       const obj = transformControls.object;
       if (obj && clouds.includes(obj)) pushUndo(obj);
     }
     if (!e.value) {
-      // Quan s'acaba de moure la caixa directament, actualitza la relació relativa
       const obj = transformControls.object;
       if (obj && obj.userData.parentCloud) {
         const pc = obj.userData.parentCloud;
@@ -174,7 +195,6 @@ function init() {
     }
   });
 
-  // Quan es mou el núvol via TC, sincronitza la caixa de tall
   transformControls.addEventListener('change', () => {
     const obj = transformControls.object;
     if (!obj || !clouds.includes(obj)) return;
@@ -190,40 +210,12 @@ function init() {
     box.updateMatrixWorld(true);
   });
 
-  secondaryCamera = new THREE.PerspectiveCamera(60, width / height, 0.01, 1e7);
-  setSecondaryViewTop();
-
   // Càmera ortogràfica
   const aspect = width / height;
   orthoCamera = new THREE.OrthographicCamera(-50 * aspect, 50 * aspect, 50, -50, -1e6, 1e6);
   orthoControls = new OrbitControls(orthoCamera, renderer.domElement);
   orthoControls.enableDamping = false;
   orthoControls.enabled = false;
-
-  // Controls per al visor B (pantalla dividida)
-  secondaryControls = new OrbitControls(secondaryCamera, renderer.domElement);
-  secondaryControls.enableDamping = false;
-  secondaryControls.enableZoom = false; // zoom gestionat manualment a onMouseWheel
-  secondaryControls.enabled = false;
-
-  // Activa els controls del panel correcte segons on és el punter
-  renderer.domElement.addEventListener('pointerdown', e => {
-    if (!splitScreen) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    const inRight = (e.clientX - rect.left) > rect.width / 2;
-    secondaryControls.enabled   = inRight;
-    controls.enabled     = !inRight && !useOrtho;
-    if (orthoControls) orthoControls.enabled = !inRight && useOrtho;
-  }, { capture: true });
-
-  renderer.domElement.addEventListener('pointermove', e => {
-    if (!splitScreen) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    const inRight = (e.clientX - rect.left) > rect.width / 2;
-    secondaryControls.enabled   = inRight;
-    controls.enabled     = !inRight && !useOrtho;
-    if (orthoControls) orthoControls.enabled = !inRight && useOrtho;
-  }, { passive: true });
 
   window.addEventListener('resize', onWindowResize);
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -240,8 +232,6 @@ function onWindowResize() {
 
   camera.aspect = a;
   camera.updateProjectionMatrix();
-  secondaryCamera.aspect = a;
-  secondaryCamera.updateProjectionMatrix();
 
   if (orthoCamera) {
     const hH = (orthoCamera.top - orthoCamera.bottom) / 2;
@@ -288,8 +278,13 @@ function removeClipBox() {
   cloud.userData.clipBox = null;
   cloud.userData.boxRelMatrix = null;
   cloud.material.clippingPlanes = [];
+  cloud.material.needsUpdate = true;
   if (selectedCloud) transformControls.attach(selectedCloud);
   else transformControls.detach();
+  // Torna al mode del núvol
+  if (appMode === 'clipbox_translate' || appMode === 'clipbox_rotate') {
+    setMode(cloudTCMode);
+  }
 }
 
 function getActiveClipBox() {
@@ -311,7 +306,6 @@ function syncClipBox(cloud) {
 function resetAll() {
   if (!confirm(T.resetConfirm)) return;
 
-  // Elimina caixes de tall
   clouds.forEach(cloud => {
     if (cloud.userData.clipBox) {
       const box = cloud.userData.clipBox;
@@ -322,7 +316,6 @@ function resetAll() {
     }
   });
 
-  // Elimina núvols
   [...clouds].forEach(cloud => {
     scene.remove(cloud);
     cloud.geometry.dispose(); cloud.material.dispose();
@@ -331,11 +324,9 @@ function resetAll() {
   });
   clouds.length = 0;
 
-  // Elimina mesures i marcadors d'alineació
   clearAllMeasurements();
   clearAlignMarkers();
 
-  // Reinicia estat
   selectedCloud = null;
   measuring = false;
   alignMode = 0;
@@ -343,6 +334,7 @@ function resetAll() {
   undoStack.length = 0;
 
   transformControls.detach();
+  setMode('none');
 
   const measureBadge = document.getElementById('measureBadge');
   if (measureBadge) measureBadge.style.display = 'none';
@@ -405,8 +397,6 @@ function activate3DView() {
 // ─────────────────────────────────────────────
 // Alineació estil AutoCAD (2 i 3 punts)
 // ─────────────────────────────────────────────
-// Fases: 'pickCloud' → 'src' → 'tgt'
-
 function startAlign(n) {
   if (measuring) return;
   if (clouds.length < 2) { alert(T.needTwoClouds); return; }
@@ -416,6 +406,7 @@ function startAlign(n) {
   alignSrcCloud = null;
   clearAlignMarkers();
   transformControls.detach();
+  setMode('align');
   updateAlignBadge();
 }
 
@@ -425,6 +416,7 @@ function cancelAlign() {
   clearAlignMarkers();
   updateAlignBadge();
   if (selectedCloud) transformControls.attach(selectedCloud);
+  setMode(cloudTCMode);
 }
 
 function clearAlignMarkers() {
@@ -452,11 +444,9 @@ function updateAlignBadge() {
 }
 
 function handleAlignClick(pWorld, cloud) {
-  // Fase 1: selecció del núvol a moure
   if (alignPhase === 'pickCloud') {
     alignSrcCloud = cloud;
     alignPhase = 'src';
-    // Ressalta el núvol seleccionat
     selectCloud(cloud);
     updateAlignBadge();
     return;
@@ -464,7 +454,6 @@ function handleAlignClick(pWorld, cloud) {
 
   const markerR = getCloudMarkerSize();
 
-  // Fase 2: punts origen (han de ser del núvol a moure)
   if (alignPhase === 'src') {
     if (cloud !== alignSrcCloud) {
       const badge = document.getElementById('alignBadge');
@@ -487,7 +476,6 @@ function handleAlignClick(pWorld, cloud) {
     return;
   }
 
-  // Fase 3: punts destí (qualsevol núvol excepte l'origen)
   if (cloud === alignSrcCloud) {
     const badge = document.getElementById('alignBadge');
     if (badge) {
@@ -515,21 +503,38 @@ function handleAlignClick(pWorld, cloud) {
   }
 }
 
+// FIX: applyAlign2pt — els punts ja estan en espai món (capturats amb matrixWorld)
+// però cal recalcular srcDir DESPRÉS d'aplicar la translació al position del núvol
 function applyAlign2pt(srcCloud, sp, tp) {
   if (!srcCloud) return;
-  // Pas 1: translació → sp[0] va a tp[0]
-  const tr = tp[0].clone().sub(sp[0]);
-  // Pas 2: rotació al voltant de tp[0] → sp[1] (transladat) s'alinea amb tp[1]
-  const srcDir = sp[1].clone().add(tr).sub(tp[0]).normalize();
-  const tgtDir = tp[1].clone().sub(tp[0]).normalize();
-  const q = new THREE.Quaternion().setFromUnitVectors(srcDir, tgtDir);
 
+  // Pas 1: translació perquè sp[0] vagi a tp[0]
+  const tr = tp[0].clone().sub(sp[0]);
+
+  // Pas 2: rotació — sp[1] transladat ha d'alinear-se amb tp[1]
+  // sp[1] + tr és on quedarà sp[1] després de la translació
+  const sp1Translated = sp[1].clone().add(tr);
+  const srcDir = sp1Translated.clone().sub(tp[0]).normalize();
+  const tgtDir = tp[1].clone().sub(tp[0]).normalize();
+
+  // Evita quaternió NaN si els vectors són paral·lels o idèntics
+  const dot = srcDir.dot(tgtDir);
+  let q;
+  if (Math.abs(dot) > 0.9999) {
+    q = new THREE.Quaternion(); // sense rotació
+  } else {
+    q = new THREE.Quaternion().setFromUnitVectors(srcDir, tgtDir);
+  }
+
+  // Aplica translació primer
   srcCloud.position.add(tr);
+  // Aplica rotació al voltant de tp[0]
   srcCloud.position.sub(tp[0]);
   srcCloud.position.applyQuaternion(q);
   srcCloud.position.add(tp[0]);
   srcCloud.quaternion.premultiply(q);
-  srcCloud.updateMatrixWorld();
+
+  srcCloud.updateMatrixWorld(true);
   syncClipBox(srcCloud);
   selectCloud(srcCloud);
 }
@@ -537,7 +542,6 @@ function applyAlign2pt(srcCloud, sp, tp) {
 function applyAlign3pt(srcCloud, sp, tp) {
   if (!srcCloud) return;
 
-  // Construeix un sistema de referència local a partir de 3 punts
   function makeFrame(pts) {
     const x = pts[1].clone().sub(pts[0]).normalize();
     const n = new THREE.Vector3().crossVectors(
@@ -548,25 +552,154 @@ function applyAlign3pt(srcCloud, sp, tp) {
     return { o: pts[0].clone(), x, y, z: n };
   }
 
-  const sf = makeFrame(sp); // frame origen (punts font, en espai món)
-  const tf = makeFrame(tp); // frame destí
+  const sf = makeFrame(sp);
+  const tf = makeFrame(tp);
 
-  // Rotació: alinea els eixos del frame origen amb els del destí
   const sm = new THREE.Matrix4().makeBasis(sf.x, sf.y, sf.z);
   const tm = new THREE.Matrix4().makeBasis(tf.x, tf.y, tf.z);
   const R  = new THREE.Matrix4().multiplyMatrices(tm, new THREE.Matrix4().copy(sm).invert());
   const q  = new THREE.Quaternion().setFromRotationMatrix(R);
 
-  // Translació: sp[0] (rotat) ha d'anar a tp[0]
-  const spOriginRotated = sf.o.clone().applyQuaternion(q);
-  const tr = tp[0].clone().sub(spOriginRotated);
-
-  srcCloud.quaternion.premultiply(q);
+  // FIX: la posició actual del núvol ja forma part del seu position en espai món
+  // Cal aplicar la rotació al position actual i després afegir la translació
   srcCloud.position.applyQuaternion(q);
+  srcCloud.quaternion.premultiply(q);
+
+  // sp[0] (rotat) ha d'anar a tp[0]
+  const sp0Rotated = sf.o.clone().applyQuaternion(q);
+  const tr = tp[0].clone().sub(sp0Rotated);
   srcCloud.position.add(tr);
-  srcCloud.updateMatrixWorld();
+
+  srcCloud.updateMatrixWorld(true);
   syncClipBox(srcCloud);
   selectCloud(srcCloud);
+}
+
+// ─────────────────────────────────────────────
+// Auto-align per color i coordenades
+// ─────────────────────────────────────────────
+const _CA_BINS = 6;
+function _ck(r, g, b) { return r * 36 + g * 6 + b; }
+
+function detectColorRegions(cloud, maxSamples = 20000) {
+  cloud.updateMatrixWorld(true);
+  const mw = cloud.matrixWorld;
+  const pos = cloud.geometry.getAttribute('position');
+  const col = cloud.geometry.getAttribute('color');
+  if (!pos || !col) return [];
+
+  const n = pos.count, step = Math.max(1, Math.floor(n / maxSamples));
+  const bins = new Map(), v = new THREE.Vector3();
+
+  for (let i = 0; i < n; i += step) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+    const r = Math.min(_CA_BINS - 1, Math.floor(col.getX(i) * _CA_BINS));
+    const g = Math.min(_CA_BINS - 1, Math.floor(col.getY(i) * _CA_BINS));
+    const b = Math.min(_CA_BINS - 1, Math.floor(col.getZ(i) * _CA_BINS));
+    const k = _ck(r, g, b);
+    let bn = bins.get(k);
+    if (!bn) { bn = { r, g, b, sx: 0, sy: 0, sz: 0, n: 0 }; bins.set(k, bn); }
+    bn.sx += v.x; bn.sy += v.y; bn.sz += v.z; bn.n++;
+  }
+
+  const samp = Math.ceil(n / step), minN = Math.max(3, samp * 0.015);
+  const regs = [];
+  for (const [, bn] of bins) {
+    if (bn.n < minN) continue;
+    const avg = (bn.r + bn.g + bn.b) / 3;
+    const cf = Math.sqrt((bn.r - avg) ** 2 + (bn.g - avg) ** 2 + (bn.b - avg) ** 2);
+    if (cf < 0.8) continue; // skip near-gray (no distinctive)
+    regs.push({
+      r: bn.r, g: bn.g, b: bn.b, key: _ck(bn.r, bn.g, bn.b),
+      centroid: new THREE.Vector3(bn.sx / bn.n, bn.sy / bn.n, bn.sz / bn.n),
+      n: bn.n
+    });
+  }
+  regs.sort((a, b) => b.n - a.n);
+  return regs.slice(0, 15);
+}
+
+function findColorMatches(srcR, tgtR, maxD = 2.0) {
+  const used = new Set(), res = [];
+  for (const s of srcR) {
+    let best = null, bd = maxD;
+    for (const t of tgtR) {
+      if (used.has(t.key)) continue;
+      const d = Math.sqrt((s.r - t.r) ** 2 + (s.g - t.g) ** 2 + (s.b - t.b) ** 2);
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (best) { res.push({ src: s, tgt: best, conf: 1 - bd / maxD }); used.add(best.key); }
+  }
+  res.sort((a, b) => b.conf - a.conf);
+  return res.slice(0, 5);
+}
+
+// ─────────────────────────────────────────────
+// Exportar secció de la caixa de tall com a DXF
+// ─────────────────────────────────────────────
+function exportClipSectionDXF() {
+  const cloud = selectedCloud || clouds.find(c => c.userData.clipBox);
+  if (!cloud || !cloud.userData.clipBox) { alert(T.noBoxCreated); return; }
+
+  // Determina els eixos de projecció segons la vista actual
+  const cam = useOrtho ? orthoCamera : camera;
+  const dir = new THREE.Vector3();
+  cam.getWorldDirection(dir);
+  const ax = Math.abs(dir.x), ay = Math.abs(dir.y), az = Math.abs(dir.z);
+  let a0, a1, viewName;
+  if (ay >= ax && ay >= az) { a0 = 'x'; a1 = 'z'; viewName = 'TOP'; }
+  else if (az >= ax && az >= ay) { a0 = 'x'; a1 = 'y'; viewName = 'FRONT'; }
+  else { a0 = 'y'; a1 = 'z'; viewName = 'SIDE'; }
+
+  const box = cloud.userData.clipBox;
+  box.updateMatrixWorld(true);
+  const planes = LOCAL_CLIP_PLANES.map(p => p.clone().applyMatrix4(box.matrixWorld));
+
+  cloud.updateMatrixWorld(true);
+  const mw = cloud.matrixWorld;
+  const pos = cloud.geometry.getAttribute('position');
+  if (!pos) return;
+
+  const badge = document.getElementById('loadingBadge');
+  if (badge) badge.style.display = 'block';
+
+  setTimeout(() => {
+    const v = new THREE.Vector3();
+    const grid = new Map();
+    const RES = 0.02; // cel·la 2cm
+
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+      if (!planes.every(p => p.distanceToPoint(v) >= 0)) continue;
+      const gx = Math.round(v[a0] / RES), gy = Math.round(v[a1] / RES);
+      const k = `${gx},${gy}`;
+      if (!grid.has(k)) grid.set(k, [v[a0], v[a1]]);
+    }
+
+    if (grid.size === 0) {
+      if (badge) badge.style.display = 'none';
+      alert('Cap punt dins la caixa de tall.');
+      return;
+    }
+
+    const pts = [...grid.values()].slice(0, 100000);
+    let dxf = '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n';
+    dxf += '0\nSECTION\n2\nENTITIES\n';
+    for (const [x, y] of pts) {
+      dxf += `0\nPOINT\n8\nSECCIO\n10\n${x.toFixed(4)}\n20\n${y.toFixed(4)}\n30\n0.0\n`;
+    }
+    dxf += '0\nENDSEC\n0\nEOF\n';
+
+    const blob = new Blob([dxf], { type: 'application/dxf' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `seccio_${viewName}.dxf`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+
+    if (badge) badge.style.display = 'none';
+    console.log(`DXF: ${pts.length} punts (vista ${viewName})`);
+  }, 20);
 }
 
 // ─────────────────────────────────────────────
@@ -574,8 +707,6 @@ function applyAlign3pt(srcCloud, sp, tp) {
 // ─────────────────────────────────────────────
 function setupUI() {
   const fileInput = document.getElementById('fileInput');
-  const divider   = document.getElementById('splitDivider');
-  const labelB    = document.getElementById('labelB');
 
   // ── Càrrega de fitxers ──
   fileInput.value = '';
@@ -610,7 +741,6 @@ function setupUI() {
         selectCloud(cloud);
         onWindowResize();
         fitCameraToObject(cloud);
-        fitSecondaryCameraToObject(cloud);
         updateRaycasterThreshold();
       }
     } finally {
@@ -662,6 +792,7 @@ function setupUI() {
     transformControls.attach(box);
     transformControls.setMode(mode);
     setClipBoxBtnActive(mode);
+    setMode(mode === 'translate' ? 'clipbox_translate' : 'clipbox_rotate');
   }
 
   function exitClipBoxMode() {
@@ -669,6 +800,7 @@ function setupUI() {
     if (selectedCloud) transformControls.attach(selectedCloud);
     else transformControls.detach();
     transformControls.setMode(cloudTCMode);
+    setMode(cloudTCMode);
   }
 
   document.getElementById('modeTranslate').onclick = () => {
@@ -676,12 +808,14 @@ function setupUI() {
     exitClipBoxMode();
     if (selectedCloud) transformControls.attach(selectedCloud);
     transformControls.setMode('translate');
+    setMode('translate');
   };
   document.getElementById('modeRotate').onclick = () => {
     cloudTCMode = 'rotate';
     exitClipBoxMode();
     if (selectedCloud) transformControls.attach(selectedCloud);
     transformControls.setMode('rotate');
+    setMode('rotate');
   };
 
   document.getElementById('moveClipBox').onclick   = () => withClipBox('translate');
@@ -689,16 +823,99 @@ function setupUI() {
   document.getElementById('removeClipBox').onclick = () => { removeClipBox(); setClipBoxBtnActive(null); };
   document.getElementById('btnUndo').onclick = doUndo;
 
+  // ── Exportar secció DXF ──
+  document.getElementById('btnExportSection').onclick = exportClipSectionDXF;
+
   // ── Alineació ──
   document.getElementById('align2pt').onclick = () => startAlign(2);
   document.getElementById('align3pt').onclick = () => startAlign(3);
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { cancelAlign(); } });
+
+  // ── Auto-align per color ──
+  let _autoAlignPending = null;
+
+  document.getElementById('btnAutoAlign').onclick = () => {
+    if (!selectedCloud || clouds.length < 2) { alert(T.needTwoClouds); return; }
+    const src = selectedCloud;
+    const panel = document.getElementById('autoAlignPanel');
+    const res   = document.getElementById('autoAlignResult');
+    panel.style.display = 'block';
+    res.textContent = 'Analitzant colors...';
+    document.getElementById('btnApplyAutoAlign').style.display = 'none';
+
+    setTimeout(() => {
+      const srcR = detectColorRegions(src);
+      const tgtR = clouds.filter(c => c !== src).flatMap(c => detectColorRegions(c));
+      const matches = findColorMatches(srcR, tgtR);
+      _autoAlignPending = matches.length ? { src, matches } : null;
+
+      if (!matches.length) {
+        res.innerHTML = '<span style="color:#f88">Cap coincidència de color trobada.<br>'
+          + '<small>Cal tenir zones de color distintiu comunes.</small></span>';
+        return;
+      }
+
+      document.getElementById('btnApplyAutoAlign').style.display = '';
+      const scale = 255 / (_CA_BINS - 1);
+      let html = `<b>${matches.length} zona${matches.length > 1 ? 'es' : ''} coincident${matches.length > 1 ? 's' : ''}:</b><br>`;
+      for (const m of matches) {
+        const rv = Math.round(m.src.r * scale);
+        const gv = Math.round(m.src.g * scale);
+        const bv = Math.round(m.src.b * scale);
+        html += `<span style="display:inline-block;width:10px;height:10px;background:rgb(${rv},${gv},${bv});`
+              + `border:1px solid #888;margin-right:3px;vertical-align:middle"></span>`
+              + `${Math.round(m.conf * 100)}%&nbsp; `;
+      }
+      res.innerHTML = html;
+    }, 20);
+  };
+
+  document.getElementById('btnApplyAutoAlign').onclick = () => {
+    if (!_autoAlignPending) return;
+    const { src, matches } = _autoAlignPending;
+    const sp = matches.map(m => m.src.centroid.clone());
+    const tp = matches.map(m => m.tgt.centroid.clone());
+    pushUndo(src);
+    if (matches.length >= 3)      applyAlign3pt(src, sp, tp);
+    else if (matches.length >= 2) applyAlign2pt(src, sp, tp);
+    else {
+      const tr = tp[0].clone().sub(sp[0]);
+      src.position.add(tr);
+      src.updateMatrixWorld();
+      syncClipBox(src);
+      selectCloud(src);
+    }
+    document.getElementById('autoAlignPanel').style.display = 'none';
+    _autoAlignPending = null;
+  };
+
+  document.getElementById('btnCancelAutoAlign').onclick = () => {
+    document.getElementById('autoAlignPanel').style.display = 'none';
+    _autoAlignPending = null;
+  };
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (alignMode) cancelAlign();
+      if (measuring) {
+        measuring = false;
+        clearCurrentMeasure();
+        updateMeasureList();
+        const badge = document.getElementById('measureBadge');
+        if (badge) badge.style.display = 'none';
+        setMode(cloudTCMode);
+      }
+    }
+  });
 
   // ── Mode mesura ──
   document.getElementById('toggleMeasure').onclick = () => {
     cancelAlign();
     measuring = !measuring;
-    if (measuring) transformControls.detach();
+    if (measuring) {
+      transformControls.detach();
+      setMode('measure');
+    } else {
+      setMode(cloudTCMode);
+    }
     clearCurrentMeasure();
     updateMeasureList();
     const badge = document.getElementById('measureBadge');
@@ -739,48 +956,6 @@ function setupUI() {
   orthoBtn('viewA_back',  new THREE.Vector3( 0, 0,-1), new THREE.Vector3(0, 1, 0));
   orthoBtn('viewA_right', new THREE.Vector3( 1, 0, 0), new THREE.Vector3(0, 1, 0));
   orthoBtn('viewA_left',  new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 1, 0));
-
-  // ── Vistes B ──
-  function secBtn(id, fn) {
-    const btn = document.getElementById(id);
-    if (btn) btn.onclick = fn;
-  }
-  secBtn('viewB_3d', () => {
-    const t = getSecondaryTarget(), d = getSecondaryDistance();
-    secondaryCamera.position.set(t.x+d, t.y+d, t.z+d);
-    secondaryCamera.up.set(0, 1, 0); secondaryCamera.lookAt(t); syncSecCam(t);
-  });
-  secBtn('viewB_top',   setSecondaryViewTop);
-  secBtn('viewB_front', setSecondaryViewFront);
-  secBtn('viewB_back',  () => { const t=getSecondaryTarget(),d=getSecondaryDistance(); secondaryCamera.position.set(t.x,t.y,t.z-d); secondaryCamera.up.set(0,1,0); secondaryCamera.lookAt(t); syncSecCam(t); });
-  secBtn('viewB_right', setSecondaryViewSide);
-  secBtn('viewB_left',  () => { const t=getSecondaryTarget(),d=getSecondaryDistance(); secondaryCamera.position.set(t.x-d,t.y,t.z); secondaryCamera.up.set(0,1,0); secondaryCamera.lookAt(t); syncSecCam(t); });
-
-  // ── Pantalla dividida ──
-  document.getElementById('splitView').onclick = () => {
-    splitScreen = true;
-    if (divider) divider.style.display = 'block';
-    if (labelB)  labelB.style.display  = 'block';
-    updateViewBButtons();
-  };
-
-  document.getElementById('singleView').onclick = () => {
-    splitScreen = false;
-    if (secondaryControls) secondaryControls.enabled = false;
-    controls.enabled = !useOrtho;
-    if (orthoControls) orthoControls.enabled = useOrtho;
-    if (divider) divider.style.display = 'none';
-    if (labelB)  labelB.style.display  = 'none';
-    updateViewBButtons();
-  };
-
-  function updateViewBButtons() {
-    ['viewB_3d','viewB_top','viewB_front','viewB_back','viewB_right','viewB_left'].forEach(id => {
-      const b = document.getElementById(id);
-      if (b) b.classList.toggle('hidden', !splitScreen);
-    });
-  }
-  updateViewBButtons();
 }
 
 // ─────────────────────────────────────────────
@@ -825,6 +1000,7 @@ function deleteCloud(cloud) {
     if (badge) badge.style.display = 'none';
     clearCurrentMeasure();
     updateMeasureList();
+    setMode('none');
   }
 
   if (selectedCloud === cloud) {
@@ -885,9 +1061,6 @@ function onPointerDown(event) {
   const ny = -((event.clientY - rect.top)  / rect.height) * 2 + 1;
   mouse.set(nx, ny);
 
-  const inRightHalf = splitScreen && (event.clientX - rect.left) > rect.width / 2;
-  if (inRightHalf) return;
-
   const activeCam = useOrtho ? orthoCamera : camera;
 
   // ── Mode alineació ──
@@ -904,7 +1077,6 @@ function onPointerDown(event) {
     } else {
       pWorld = hit.point.clone();
     }
-    // En fase pickCloud, pWorld no s'usa però cal el cloud
     handleAlignClick(pWorld, hit.object);
     return;
   }
@@ -927,13 +1099,26 @@ function onPointerDown(event) {
     return;
   }
 
+  // ── Mode caixa de tall activa: clic fora de la caixa torna al núvol ──
+  if (appMode === 'clipbox_translate' || appMode === 'clipbox_rotate') {
+    raycaster.setFromCamera(mouse, activeCam);
+    const box = getActiveClipBox();
+    if (box) {
+      const hitsBox = raycaster.intersectObject(box, false);
+      if (hitsBox.length === 0) {
+        // Clic fora de la caixa → torna al mode núvol
+        transformControls.attach(selectedCloud);
+        transformControls.setMode(cloudTCMode);
+        setMode(cloudTCMode);
+        document.getElementById('moveClipBox')?.classList.remove('active');
+        document.getElementById('rotateClipBox')?.classList.remove('active');
+      }
+    }
+    return;
+  }
+
   // ── Selecció normal ──
-
-  // Si TC està en mig d'un drag, no interferim (el gizmo gestiona els seus events)
   if (transformControls.dragging) return;
-
-  // Si TC està fixat a una caixa de tall, els clics al visor no canvien la selecció
-  // (l'usuari ha de clicar "Moure núvol" o "Rotar núvol" per sortir del mode caixa)
   if (transformControls.object && transformControls.object.userData.parentCloud) return;
 
   raycaster.setFromCamera(mouse, activeCam);
@@ -941,7 +1126,6 @@ function onPointerDown(event) {
   if (!hits.length) { selectCloud(null); return; }
 
   for (const h of hits) {
-    // Clic sobre una caixa de tall → selecciona el núvol pare
     const boxCloud = clouds.find(c => c.userData.clipBox === h.object);
     if (boxCloud) { selectCloud(boxCloud); return; }
     if (clouds.includes(h.object)) { selectCloud(h.object); return; }
@@ -1099,78 +1283,6 @@ function fitCameraToObject(object, offset = 1.8) {
   controls.update();
 }
 
-function fitSecondaryCameraToObject(object, offset = 3) {
-  const box    = new THREE.Box3().setFromObject(object);
-  const size   = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const maxSz  = Math.max(size.x, size.y, size.z) || 1;
-  const dist   = maxSz * offset;
-
-  secondaryCamera.position.set(center.x, center.y + dist, center.z);
-  secondaryCamera.up.set(0, 0, -1);
-  secondaryCamera.lookAt(center);
-  secondaryCamera.near = dist / 100;
-  secondaryCamera.far  = dist * 100;
-  secondaryCamera.updateProjectionMatrix();
-  if (secondaryControls) { secondaryControls.target.copy(center); secondaryControls.update(); }
-}
-
-// ─────────────────────────────────────────────
-// Vistes predefinides
-// ─────────────────────────────────────────────
-function setPresetViewMain(direction) {
-  const dir  = direction.clone().normalize();
-  let target = controls.target.clone();
-  if (selectedCloud) {
-    const box = new THREE.Box3().setFromObject(selectedCloud);
-    target = box.getCenter(new THREE.Vector3());
-  }
-  const dist = camera.position.distanceTo(target) || 10;
-  camera.position.copy(target).addScaledVector(dir, dist);
-  camera.up.set(0, 1, 0);
-  // Corregim "up" per a la vista de planta
-  if (Math.abs(direction.y) > 0.9) camera.up.set(0, 0, -1);
-  camera.lookAt(target);
-  controls.target.copy(target);
-  controls.update();
-}
-
-function getSecondaryTarget() {
-  const obj = selectedCloud || (clouds.length > 0 ? clouds[clouds.length - 1] : null);
-  if (!obj) return new THREE.Vector3(0, 0, 0);
-  return new THREE.Box3().setFromObject(obj).getCenter(new THREE.Vector3());
-}
-
-function getSecondaryDistance() {
-  const obj = selectedCloud || (clouds.length > 0 ? clouds[clouds.length - 1] : null);
-  if (!obj) return 10;
-  const box  = new THREE.Box3().setFromObject(obj);
-  const size = box.getSize(new THREE.Vector3());
-  return Math.max(size.x, size.y, size.z) * 3 || 10;
-}
-
-function syncSecCam(t) {
-  if (secondaryControls) { secondaryControls.target.copy(t); secondaryControls.update(); }
-}
-
-function setSecondaryViewTop() {
-  const t = getSecondaryTarget(), d = getSecondaryDistance();
-  secondaryCamera.position.set(t.x, t.y + d, t.z);
-  secondaryCamera.up.set(0, 0, -1); secondaryCamera.lookAt(t); syncSecCam(t);
-}
-
-function setSecondaryViewFront() {
-  const t = getSecondaryTarget(), d = getSecondaryDistance();
-  secondaryCamera.position.set(t.x, t.y, t.z + d);
-  secondaryCamera.up.set(0, 1, 0); secondaryCamera.lookAt(t); syncSecCam(t);
-}
-
-function setSecondaryViewSide() {
-  const t = getSecondaryTarget(), d = getSecondaryDistance();
-  secondaryCamera.position.set(t.x + d, t.y, t.z);
-  secondaryCamera.up.set(0, 1, 0); secondaryCamera.lookAt(t); syncSecCam(t);
-}
-
 // ─────────────────────────────────────────────
 // Caixa de tall
 // ─────────────────────────────────────────────
@@ -1180,7 +1292,6 @@ function createClippingBoxAroundSelected() {
 
   if (cloud.userData.clipBox) removeClipBox();
 
-  // Bounds en espai món
   cloud.updateMatrixWorld(true);
   const worldBounds = new THREE.Box3().setFromObject(cloud);
   const size   = worldBounds.getSize(new THREE.Vector3());
@@ -1196,12 +1307,10 @@ function createClippingBoxAroundSelected() {
   box.position.copy(center);
   box.scale.copy(size);
 
-  // Afegim al scene (no com a fill del núvol) perquè TransformControls funcioni correctament
   scene.add(box);
   box.userData.parentCloud = cloud;
   cloud.userData.clipBox = box;
 
-  // Matriu relativa cloud→box per sincronitzar quan el núvol es mogui
   box.updateMatrixWorld(true);
   cloud.userData.boxRelMatrix = new THREE.Matrix4()
     .copy(cloud.matrixWorld).invert()
@@ -1212,7 +1321,6 @@ function createClippingBoxAroundSelected() {
   transformControls.attach(cloud);
   transformControls.setMode('translate');
 }
-
 
 // ─────────────────────────────────────────────
 // Merge i descàrrega
@@ -1259,17 +1367,12 @@ function downloadXYZ(points) {
 }
 
 // ─────────────────────────────────────────────
-// Roda (zoom) — càmera A o B
+// Roda (zoom)
 // ─────────────────────────────────────────────
 function onMouseWheel(event) {
   event.preventDefault();
 
-  const rect = renderer.domElement.getBoundingClientRect();
-  const x    = event.clientX - rect.left;
-  const inB  = splitScreen && x > rect.width / 2;
-
-  if (!inB && useOrtho) {
-    // Zoom ortogràfic: ampliar/reduir el frustum
+  if (useOrtho) {
     const factor = event.deltaY > 0 ? 1.1 : 0.9;
     orthoCamera.left   *= factor; orthoCamera.right *= factor;
     orthoCamera.top    *= factor; orthoCamera.bottom *= factor;
@@ -1278,17 +1381,6 @@ function onMouseWheel(event) {
   }
 
   const factor = event.deltaY > 0 ? 1.1 : 0.9;
-
-  if (inB) {
-    const target = secondaryControls ? secondaryControls.target.clone() : getSecondaryTarget();
-    const offset = new THREE.Vector3().subVectors(secondaryCamera.position, target);
-    offset.multiplyScalar(factor);
-    secondaryCamera.position.copy(target).add(offset);
-    secondaryCamera.updateProjectionMatrix();
-    if (secondaryControls) secondaryControls.update();
-    return;
-  }
-
   const target = controls.target.clone();
   const offset = new THREE.Vector3().subVectors(camera.position, target);
   offset.multiplyScalar(factor);
@@ -1303,43 +1395,22 @@ function onMouseWheel(event) {
 function animate() {
   requestAnimationFrame(animate);
   try {
-  if (useOrtho) {
-    if (orthoControls) orthoControls.update();
-  } else {
-    controls.update();
-  }
-  if (splitScreen && secondaryControls) secondaryControls.update();
-  updateClipPlanes();
+    if (useOrtho) {
+      if (orthoControls) orthoControls.update();
+    } else {
+      controls.update();
+    }
+    updateClipPlanes();
 
-  const W = window.innerWidth;
-  const H = window.innerHeight;
-  const camA = useOrtho ? orthoCamera : camera;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const camA = useOrtho ? orthoCamera : camera;
 
-  if (!splitScreen) {
     if (!useOrtho) { camera.aspect = W / H; camera.updateProjectionMatrix(); }
     renderer.setViewport(0, 0, W, H);
     renderer.setScissor(0, 0, W, H);
     renderer.setScissorTest(true);
     renderer.render(scene, camA);
-    return;
-  }
-
-  const halfW = Math.floor(W / 2);
-
-  // Visor A
-  if (!useOrtho) { camera.aspect = halfW / H; camera.updateProjectionMatrix(); }
-  renderer.setViewport(0, 0, halfW, H);
-  renderer.setScissor(0, 0, halfW, H);
-  renderer.setScissorTest(true);
-  renderer.render(scene, camA);
-
-  // Visor B
-  secondaryCamera.aspect = (W - halfW) / H;
-  secondaryCamera.updateProjectionMatrix();
-  renderer.setViewport(halfW, 0, W - halfW, H);
-  renderer.setScissor(halfW, 0, W - halfW, H);
-  renderer.setScissorTest(true);
-  renderer.render(scene, secondaryCamera);
   } catch(err) { console.error('animate error:', err); }
 }
 

@@ -230,6 +230,25 @@
 
     .hidden { display: none !important; }
 
+    /* Auto-align panel */
+    #autoAlignPanel {
+      display: none;
+      font-size: 11px;
+      background: #1a1a1a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 6px;
+      margin: 3px 0;
+      line-height: 1.6;
+    }
+    #autoAlignPanel button {
+      font-size: 11px;
+      padding: 3px 7px;
+      margin: 2px 2px 0 0;
+      display: inline-block;
+      width: auto;
+    }
+
     /* Viewer label */
     .viewer-label {
       position: absolute;
@@ -279,10 +298,17 @@
     <button id="moveClipBox">&#8596; Move box</button>
     <button id="rotateClipBox">&#8635; Rotate box</button>
     <button id="removeClipBox">&#10005; Remove box</button>
+    <button id="btnExportSection">&#8659; Export section DXF</button>
 
     <div class="sep"></div>
     <button id="align2pt">&#8853; Align 2 points</button>
     <button id="align3pt">&#8853; Align 3 points</button>
+    <button id="btnAutoAlign">&#127912; Auto-align (color)</button>
+    <div id="autoAlignPanel">
+      <div id="autoAlignResult">...</div>
+      <button id="btnApplyAutoAlign" style="display:none">&#10003; Apply</button>
+      <button id="btnCancelAutoAlign">&#10005; Cancel</button>
+    </div>
 
     <div class="sep"></div>
     <button id="toggleMeasure">&#128207; Measure mode</button>
