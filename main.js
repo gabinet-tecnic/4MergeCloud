@@ -591,6 +591,265 @@ function applyAlign3pt(srcCloud, sp, tp) {
 // ─────────────────────────────────────────────
 // Auto-align per color i coordenades (v2 — cel·les locals + RANSAC)
 // ─────────────────────────────────────────────
+// ── ICP (Iterative Closest Point) ────────────────────────────────────────────
+//
+// Pipeline:
+//  1. Mostreig aleatori dels dos núvols (≤5000 pts cadascun)
+//  2. Hash espacial del núvol objectiu per cerca ràpida del veí més proper
+//  3. Per cada iteració:
+//      a. Correspondències per veí més proper
+//      b. Rebuig d'outliers (> 2.5× mediana de distàncies)
+//      c. Kabsch (SVD 3×3) → R, t òptims
+//      d. Aplica R,t al mostreig font, acumula transform total
+//  4. Al final, aplica el transform total al núvol sencer (amb Undo)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Àlgebra 3×3 ──────────────────────────────────────────────────────────────
+function _m3mul(A, B) {
+  const C = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i=0;i<3;i++) for (let k=0;k<3;k++) if (A[i][k]!==0)
+    for (let j=0;j<3;j++) C[i][j] += A[i][k]*B[k][j];
+  return C;
+}
+function _m3T(A) {
+  return [[A[0][0],A[1][0],A[2][0]],[A[0][1],A[1][1],A[2][1]],[A[0][2],A[1][2],A[2][2]]];
+}
+function _m3det(A) {
+  return A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+       - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+       + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+}
+
+// Jacobi eigendecomposition per matriu simètrica 3×3
+// Retorna { values:[λ0,λ1,λ2], vectors:V } on A ≈ V diag(λ) V^T
+function _jacobiEig3(Ain) {
+  const a = [Ain[0].slice(), Ain[1].slice(), Ain[2].slice()];
+  const V = [[1,0,0],[0,1,0],[0,0,1]];
+  for (let sweep=0; sweep<30; sweep++) {
+    let maxOff=0;
+    for (let i=0;i<3;i++) for (let j=i+1;j<3;j++) maxOff=Math.max(maxOff,Math.abs(a[i][j]));
+    if (maxOff < 1e-14) break;
+    for (let p=0;p<2;p++) for (let q=p+1;q<3;q++) {
+      if (Math.abs(a[p][q]) < 1e-15) continue;
+      const tau = (a[q][q]-a[p][p])/(2*a[p][q]);
+      const t   = (tau>=0?1:-1)/(Math.abs(tau)+Math.sqrt(1+tau*tau));
+      const c   = 1/Math.sqrt(1+t*t), s = t*c;
+      const app=a[p][p], aqq=a[q][q], apq=a[p][q];
+      a[p][p]=app-t*apq; a[q][q]=aqq+t*apq; a[p][q]=a[q][p]=0;
+      for (let r=0;r<3;r++) {
+        if (r===p||r===q) continue;
+        const arp=a[r][p],arq=a[r][q];
+        a[r][p]=a[p][r]=c*arp-s*arq;
+        a[r][q]=a[q][r]=s*arp+c*arq;
+      }
+      for (let r=0;r<3;r++) {
+        const vrp=V[r][p],vrq=V[r][q];
+        V[r][p]=c*vrp-s*vrq; V[r][q]=s*vrp+c*vrq;
+      }
+    }
+  }
+  return { values:[a[0][0],a[1][1],a[2][2]], vectors:V };
+}
+
+// SVD 3×3: H = U diag(S) V^T
+function _svd3(H) {
+  const HT  = _m3T(H);
+  const HtH = _m3mul(HT, H);
+  const { values:s2, vectors:V } = _jacobiEig3(HtH);
+  // Ordena per valor singular descendent
+  const idx = [0,1,2].sort((a,b)=>s2[b]-s2[a]);
+  const S   = idx.map(i=>Math.sqrt(Math.max(0,s2[i])));
+  const Vs  = [[V[0][idx[0]],V[0][idx[1]],V[0][idx[2]]],
+                [V[1][idx[0]],V[1][idx[1]],V[1][idx[2]]],
+                [V[2][idx[0]],V[2][idx[1]],V[2][idx[2]]]];
+  // U = H V S^{-1}  (columnes on S>0, les altres ortogonalitzem via det)
+  const HV = _m3mul(H, Vs);
+  const U  = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++)
+    U[i][j] = S[j]>1e-10 ? HV[i][j]/S[j] : 0;
+  // Si U és quasi-singular, corregim l'última columna amb el producte vectorial
+  if (Math.abs(_m3det(U)) < 0.5) {
+    for (let i=0;i<3;i++) {
+      U[i][2] = (i===0) ? U[1][0]*U[2][1]-U[2][0]*U[1][1]
+              : (i===1) ? U[2][0]*U[0][1]-U[0][0]*U[2][1]
+                        : U[0][0]*U[1][1]-U[1][0]*U[0][1];
+    }
+  }
+  return { U, S, V:Vs };
+}
+
+// Algoritme de Kabsch: transform rígid òptim (R,t) que minimitza Σ|R·aᵢ+t−bᵢ|²
+function _kabsch(srcPts, tgtPts) {
+  const n = srcPts.length;
+  let cSx=0,cSy=0,cSz=0, cTx=0,cTy=0,cTz=0;
+  for (let i=0;i<n;i++) {
+    cSx+=srcPts[i].x; cSy+=srcPts[i].y; cSz+=srcPts[i].z;
+    cTx+=tgtPts[i].x; cTy+=tgtPts[i].y; cTz+=tgtPts[i].z;
+  }
+  cSx/=n; cSy/=n; cSz/=n; cTx/=n; cTy/=n; cTz/=n;
+  // Matriu de cross-covariança H = Aᵀ B
+  const H = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i=0;i<n;i++) {
+    const ax=srcPts[i].x-cSx, ay=srcPts[i].y-cSy, az=srcPts[i].z-cSz;
+    const bx=tgtPts[i].x-cTx, by=tgtPts[i].y-cTy, bz=tgtPts[i].z-cTz;
+    H[0][0]+=ax*bx; H[0][1]+=ax*by; H[0][2]+=ax*bz;
+    H[1][0]+=ay*bx; H[1][1]+=ay*by; H[1][2]+=ay*bz;
+    H[2][0]+=az*bx; H[2][1]+=az*by; H[2][2]+=az*bz;
+  }
+  const {U,V} = _svd3(H);
+  let R = _m3mul(V, _m3T(U));
+  // Corregeix reflexió (det(R) ha de ser +1)
+  if (_m3det(R) < 0) {
+    const Vc = V.map(r=>r.slice());
+    for (let i=0;i<3;i++) Vc[i][2]=-Vc[i][2];
+    R = _m3mul(Vc, _m3T(U));
+  }
+  // t = centroid_tgt − R · centroid_src
+  const t = [
+    cTx-(R[0][0]*cSx+R[0][1]*cSy+R[0][2]*cSz),
+    cTy-(R[1][0]*cSx+R[1][1]*cSy+R[1][2]*cSz),
+    cTz-(R[2][0]*cSx+R[2][1]*cSy+R[2][2]*cSz),
+  ];
+  return { R, t };
+}
+
+// ── Hash espacial per a cerca del veí més proper ──────────────────────────────
+function _buildHash(pts, cell) {
+  const h = new Map();
+  for (let i=0;i<pts.length;i++) {
+    const k=`${Math.floor(pts[i].x/cell)},${Math.floor(pts[i].y/cell)},${Math.floor(pts[i].z/cell)}`;
+    if (!h.has(k)) h.set(k,[]);
+    h.get(k).push(i);
+  }
+  return h;
+}
+
+function _nearest(p, pts, hash, cell) {
+  const kx=Math.floor(p.x/cell), ky=Math.floor(p.y/cell), kz=Math.floor(p.z/cell);
+  let best=Infinity, bi=-1;
+  for (let dx=-1;dx<=1;dx++) for (let dy=-1;dy<=1;dy++) for (let dz=-1;dz<=1;dz++) {
+    const bucket=hash.get(`${kx+dx},${ky+dy},${kz+dz}`);
+    if (!bucket) continue;
+    for (const i of bucket) {
+      const d=(pts[i].x-p.x)**2+(pts[i].y-p.y)**2+(pts[i].z-p.z)**2;
+      if (d<best){best=d;bi=i;}
+    }
+  }
+  return {dist:Math.sqrt(best),idx:bi};
+}
+
+// ── Loop ICP principal ────────────────────────────────────────────────────────
+async function runICP(srcCloud, tgtCloud, maxIter=50, onProgress=null) {
+  srcCloud.updateMatrixWorld(true);
+  tgtCloud.updateMatrixWorld(true);
+  const srcPos=srcCloud.geometry.getAttribute('position'), srcMW=srcCloud.matrixWorld;
+  const tgtPos=tgtCloud.geometry.getAttribute('position'), tgtMW=tgtCloud.matrixWorld;
+  const MAX=5000;
+  const sStep=Math.max(1,Math.floor(srcPos.count/MAX));
+  const tStep=Math.max(1,Math.floor(tgtPos.count/MAX));
+  const v=new THREE.Vector3();
+  const srcS=[], tgtS=[];
+  for (let i=0;i<srcPos.count;i+=sStep){
+    v.fromBufferAttribute(srcPos,i).applyMatrix4(srcMW);
+    srcS.push({x:v.x,y:v.y,z:v.z});
+  }
+  for (let i=0;i<tgtPos.count;i+=tStep){
+    v.fromBufferAttribute(tgtPos,i).applyMatrix4(tgtMW);
+    tgtS.push({x:v.x,y:v.y,z:v.z});
+  }
+  // Estima cell size des del bounding box del target (~1/50 de la diagonal)
+  const bb=new THREE.Box3().setFromObject(tgtCloud);
+  let cell=bb.max.clone().sub(bb.min).length()/50;
+  if (cell<0.001) cell=0.1;
+
+  // Transform acumulat (comença com identitat)
+  let Rtot=[[1,0,0],[0,1,0],[0,0,1]], ttot=[0,0,0];
+  let srcW=srcS.map(p=>({...p})); // còpia de treball
+  let prevErr=Infinity;
+
+  for (let it=0;it<maxIter;it++) {
+    const hash=_buildHash(tgtS,cell);
+    const sC=[],tC=[],dists=[];
+    for (const p of srcW){
+      const {dist,idx}=_nearest(p,tgtS,hash,cell);
+      if(idx>=0){sC.push(p);tC.push(tgtS[idx]);dists.push(dist);}
+    }
+    if(sC.length<6) break;
+    // Rebuig outliers: > 2.5× la mediana
+    const ds=[...dists].sort((a,b)=>a-b);
+    const thresh=ds[Math.floor(ds.length/2)]*2.5;
+    const sF=[],tF=[];
+    for(let i=0;i<sC.length;i++) if(dists[i]<thresh){sF.push(sC[i]);tF.push(tC[i]);}
+    if(sF.length<6) break;
+    // Error RMS
+    let err=0;
+    for(let i=0;i<sF.length;i++){
+      err+=(sF[i].x-tF[i].x)**2+(sF[i].y-tF[i].y)**2+(sF[i].z-tF[i].z)**2;
+    }
+    err=Math.sqrt(err/sF.length);
+    if(onProgress) onProgress(it+1,maxIter,err);
+    if(Math.abs(prevErr-err)<1e-7) break;
+    prevErr=err;
+    // Kabsch
+    const {R,t}=_kabsch(sF,tF);
+    // Aplica als punts de treball
+    for(const p of srcW){
+      const {x,y,z}=p;
+      p.x=R[0][0]*x+R[0][1]*y+R[0][2]*z+t[0];
+      p.y=R[1][0]*x+R[1][1]*y+R[1][2]*z+t[1];
+      p.z=R[2][0]*x+R[2][1]*y+R[2][2]*z+t[2];
+    }
+    // Acumula: Rtot = R·Rtot,  ttot = R·ttot + t
+    Rtot=_m3mul(R,Rtot);
+    ttot=[
+      R[0][0]*ttot[0]+R[0][1]*ttot[1]+R[0][2]*ttot[2]+t[0],
+      R[1][0]*ttot[0]+R[1][1]*ttot[1]+R[1][2]*ttot[2]+t[1],
+      R[2][0]*ttot[0]+R[2][1]*ttot[1]+R[2][2]*ttot[2]+t[2],
+    ];
+    // Redueix cell size a mesura que convergim
+    if(it>5) cell=Math.max(bb.max.clone().sub(bb.min).length()/500, cell*0.92);
+    // Cedeix al browser cada 5 iteracions
+    if(it%5===4) await new Promise(r=>setTimeout(r,0));
+  }
+  return {R:Rtot,t:ttot,error:prevErr};
+}
+
+// ── Aplica ICP al núvol seleccionat ──────────────────────────────────────────
+async function applyICP() {
+  if(clouds.length<2){alert(window.APP_LANG==='en'?'Load at least 2 clouds first.':'Cal tenir almenys 2 núvols carregats.');return;}
+  const src=selectedCloud;
+  const tgt=clouds.find(c=>c!==src&&c.visible);
+  if(!src||!tgt){alert(window.APP_LANG==='en'?'Select source cloud (the one to move).':'Selecciona el núvol font (el que es mourà).');return;}
+
+  const badge=document.getElementById('loadingBadge');
+  badge.style.display='block';
+  badge.textContent='⏳ ICP — preparant...';
+
+  const {R,t,error}=await runICP(src,tgt,60,(it,max,err)=>{
+    badge.textContent=`⏳ ICP iteració ${it}/${max} — error: ${err.toFixed(4)} m`;
+  });
+
+  badge.style.display='none';
+  badge.textContent='⏳ Loading file...';
+
+  pushUndo(src);
+  // Aplica el transform acumulat al núvol sencer via Matrix4
+  const mat=new THREE.Matrix4().set(
+    R[0][0],R[0][1],R[0][2],t[0],
+    R[1][0],R[1][1],R[1][2],t[1],
+    R[2][0],R[2][1],R[2][2],t[2],
+    0,0,0,1
+  );
+  src.applyMatrix4(mat);
+  src.updateMatrixWorld(true);
+  selectCloud(src);
+
+  const msg=window.APP_LANG==='en'
+    ?`ICP finished.\nFinal error: ${error.toFixed(4)} m\n(Undo available)`
+    :`ICP acabat.\nError final: ${error.toFixed(4)} m\n(Undo disponible)`;
+  alert(msg);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Detecta cel·les locals de 50cm amb color distintiu.
 // Cada cel·la és un punt de referència precís (radi ~25cm vs metres d'un centroide global).
@@ -1304,6 +1563,8 @@ function setupUI() {
     document.getElementById('autoAlignPanel').style.display = 'none';
     _autoAlignPending = null;
   };
+
+  document.getElementById('btnICP').onclick = () => { applyICP(); };
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (alignMode) cancelAlign();
