@@ -192,6 +192,8 @@ function init() {
           .copy(pc.matrixWorld).invert()
           .multiply(obj.matrixWorld);
       }
+      // Feedback visual breu quan es confirma el moviment
+      if (obj && clouds.includes(obj)) _flashConfirmBadge();
     }
     if (useOrtho) {
       if (orthoControls) orthoControls.enabled = !e.value;
@@ -848,6 +850,179 @@ async function applyICP() {
     ?`ICP finished.\nFinal error: ${error.toFixed(4)} m\n(Undo available)`
     :`ICP acabat.\nError final: ${error.toFixed(4)} m\n(Undo disponible)`;
   alert(msg);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Transform confirm badge ───────────────────────────────────────────────────
+let _confirmTimer = null;
+function _flashConfirmBadge() {
+  const b = document.getElementById('confirmBadge');
+  if (!b) return;
+  b.style.display = 'block';
+  b.style.opacity = '1';
+  clearTimeout(_confirmTimer);
+  _confirmTimer = setTimeout(() => {
+    b.style.opacity = '0';
+    setTimeout(() => { b.style.display = 'none'; b.style.opacity = '1'; }, 420);
+  }, 1200);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Annotation / Drawing overlay ─────────────────────────────────────────────
+//
+// Canvas persistent (#annotateCanvas) sempre visible per sobre del núvol.
+// Modes: freehand (traç lliure), line (segment), arrow (fletxa).
+// Els traços es guarden a `_annStrokes` i es redibuixen si cal.
+// Els events van al #viewer quan el mode anotació és actiu.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _annActive  = false;
+let _annMode    = 'free';   // 'free' | 'line' | 'arrow'
+let _annColor   = '#ff4444';
+let _annWidth   = 2;
+let _annStrokes = [];       // [{mode, color, width, pts:[{x,y}]}]
+let _annCurrent = null;     // traç en curs
+let _annDrawing = false;
+
+function _annCanvas()  { return document.getElementById('annotateCanvas'); }
+function _annCtx()     { return _annCanvas().getContext('2d'); }
+
+function _annResize() {
+  const lc = _annCanvas();
+  const viewer = document.getElementById('viewer');
+  const w = viewer.offsetWidth  || window.innerWidth;
+  const h = viewer.offsetHeight || window.innerHeight;
+  if (lc.width === w && lc.height === h) return;
+  lc.width = w; lc.height = h;
+  _annRedraw();
+}
+
+function _annRedraw() {
+  const lc = _annCanvas();
+  const ctx = _annCtx();
+  ctx.clearRect(0, 0, lc.width, lc.height);
+  for (const s of _annStrokes) _annDrawStroke(ctx, s, false);
+}
+
+function _annDrawStroke(ctx, s, isPreview) {
+  if (!s.pts || s.pts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = s.color;
+  ctx.lineWidth   = s.width;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.setLineDash([]);
+
+  if (s.mode === 'free') {
+    ctx.beginPath();
+    ctx.moveTo(s.pts[0].x, s.pts[0].y);
+    for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+    ctx.stroke();
+  } else {
+    // line o arrow: primer i últim punt
+    const p0 = s.pts[0], p1 = s.pts[s.pts.length - 1];
+    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+    if (s.mode === 'arrow') {
+      // Cap de fletxa
+      const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+      const al  = Math.max(10, s.width * 4);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p1.x - al * Math.cos(ang - 0.4), p1.y - al * Math.sin(ang - 0.4));
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p1.x - al * Math.cos(ang + 0.4), p1.y - al * Math.sin(ang + 0.4));
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// ── Events d'anotació ─────────────────────────────────────────────────────────
+function _annVP(e) {
+  const r = document.getElementById('viewer').getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return { x: src.clientX - r.left, y: src.clientY - r.top };
+}
+
+function _annDown(e) {
+  if (!_annActive || (e.target.closest && e.target.closest('#controls,#lassoCancel'))) return;
+  e.preventDefault(); e.stopPropagation();
+  _annDrawing = true;
+  const p = _annVP(e);
+  _annCurrent = { mode: _annMode, color: _annColor, width: _annWidth, pts: [p] };
+}
+function _annMove(e) {
+  if (!_annActive || !_annDrawing) return;
+  e.preventDefault(); e.stopPropagation();
+  const p = _annVP(e);
+  if (_annMode === 'free') {
+    _annCurrent.pts.push(p);
+  } else {
+    _annCurrent.pts = [_annCurrent.pts[0], p]; // only start+end for line/arrow
+  }
+  _annRedraw();
+  _annDrawStroke(_annCtx(), _annCurrent, true);
+}
+function _annUp(e) {
+  if (!_annActive || !_annDrawing) return;
+  e.preventDefault(); e.stopPropagation();
+  _annDrawing = false;
+  if (_annCurrent && _annCurrent.pts.length >= 2) {
+    _annStrokes.push(_annCurrent);
+    _annRedraw();
+  }
+  _annCurrent = null;
+}
+function _annTStart(e) {
+  if (!_annActive || (e.target.closest && e.target.closest('#controls'))) return;
+  e.preventDefault();
+  _annDrawing = true;
+  _annCurrent = { mode:_annMode, color:_annColor, width:_annWidth, pts:[_annVP(e)] };
+}
+function _annTMove(e) {
+  if (!_annActive || !_annDrawing) return;
+  e.preventDefault();
+  const p = _annVP(e);
+  if (_annMode==='free') _annCurrent.pts.push(p);
+  else _annCurrent.pts = [_annCurrent.pts[0], p];
+  _annRedraw(); _annDrawStroke(_annCtx(), _annCurrent, true);
+}
+function _annTEnd(e) {
+  if (!_annActive || !_annDrawing) return;
+  e.preventDefault();
+  _annDrawing = false;
+  if (_annCurrent && _annCurrent.pts.length>=2) { _annStrokes.push(_annCurrent); _annRedraw(); }
+  _annCurrent = null;
+}
+
+function startAnnotate() {
+  _annActive = true;
+  _annResize();
+  const viewer = document.getElementById('viewer');
+  viewer.classList.add('annotate-active');
+  if (renderer) renderer.domElement.style.pointerEvents = 'none';
+  viewer.addEventListener('pointerdown', _annDown,   { passive:false });
+  viewer.addEventListener('pointermove', _annMove,   { passive:false });
+  viewer.addEventListener('pointerup',   _annUp,     { passive:false });
+  viewer.addEventListener('touchstart',  _annTStart, { passive:false });
+  viewer.addEventListener('touchmove',   _annTMove,  { passive:false });
+  viewer.addEventListener('touchend',    _annTEnd,   { passive:false });
+  document.getElementById('btnAnnotate').classList.add('active');
+  document.getElementById('annotatePanel').style.display = 'block';
+}
+
+function stopAnnotate() {
+  _annActive  = false;
+  _annDrawing = false;
+  const viewer = document.getElementById('viewer');
+  viewer.classList.remove('annotate-active');
+  if (renderer) renderer.domElement.style.pointerEvents = 'auto';
+  viewer.removeEventListener('pointerdown', _annDown);
+  viewer.removeEventListener('pointermove', _annMove);
+  viewer.removeEventListener('pointerup',   _annUp);
+  viewer.removeEventListener('touchstart',  _annTStart);
+  viewer.removeEventListener('touchmove',   _annTMove);
+  viewer.removeEventListener('touchend',    _annTEnd);
+  document.getElementById('btnAnnotate').classList.remove('active');
+  // Panel queda visible per canviar colors/esborrar traços
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // ── DXF Overlay import ────────────────────────────────────────────────────────
@@ -1871,6 +2046,49 @@ function setupUI() {
       }
     }
   });
+
+  // ── Annotate / Draw ──
+  document.getElementById('btnAnnotate').onclick = () => {
+    if (_annActive) { stopAnnotate(); return; }
+    if (lassoErasing) _stopErase();
+    startAnnotate();
+  };
+
+  // Selecció de color
+  document.querySelectorAll('.ann-color').forEach(el => {
+    el.onclick = () => {
+      document.querySelectorAll('.ann-color').forEach(e => e.classList.remove('selected'));
+      el.classList.add('selected');
+      _annColor = el.dataset.color;
+    };
+  });
+
+  // Modes
+  ['Free','Line','Arrow'].forEach(m => {
+    const btn = document.getElementById('annMode' + m);
+    if (btn) btn.onclick = () => {
+      _annMode = m.toLowerCase();
+      ['Free','Line','Arrow'].forEach(x =>
+        document.getElementById('annMode'+x)?.classList.toggle('active', x===m));
+    };
+  });
+
+  // Amplada del traç
+  const annWidthEl = document.getElementById('annWidth');
+  if (annWidthEl) annWidthEl.oninput = () => { _annWidth = +annWidthEl.value; };
+
+  // Undo últim traç
+  document.getElementById('annUndo').onclick = () => {
+    if (_annStrokes.length) { _annStrokes.pop(); _annRedraw(); }
+  };
+
+  // Esborra tot
+  document.getElementById('annClear').onclick = () => {
+    _annStrokes = []; _annRedraw();
+  };
+
+  // Redimensiona el canvas d'anotació quan la finestra canvia de mida
+  window.addEventListener('resize', () => { if (_annStrokes.length) _annResize(); });
 
   // ── Erase tools ──
   document.getElementById('btnRectErase').onclick = () => {
