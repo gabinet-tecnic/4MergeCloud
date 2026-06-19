@@ -508,32 +508,33 @@ function handleAlignClick(pWorld, cloud) {
   }
 }
 
-// FIX: applyAlign2pt — els punts ja estan en espai món (capturats amb matrixWorld)
-// però cal recalcular srcDir DESPRÉS d'aplicar la translació al position del núvol
+// Alineació 2D (Kabsch XZ) — força rotació entorn l'eix Y vertical.
+// Evita el bug del producte vectorial 3D que podia generar reflexions
+// quan l'ordre dels punts és diferent entre núvols.
+
 function applyAlign2pt(srcCloud, sp, tp) {
   if (!srcCloud) return;
 
-  // Pas 1: translació perquè sp[0] vagi a tp[0]
+  // Translació: sp[0] → tp[0]
   const tr = tp[0].clone().sub(sp[0]);
 
-  // Pas 2: rotació — sp[1] transladat ha d'alinear-se amb tp[1]
-  // sp[1] + tr és on quedarà sp[1] després de la translació
-  const sp1Translated = sp[1].clone().add(tr);
-  const srcDir = sp1Translated.clone().sub(tp[0]).normalize();
-  const tgtDir = tp[1].clone().sub(tp[0]).normalize();
+  // Rotació entorn Y: alinear la projecció XZ de sp[0]→sp[1] amb tp[0]→tp[1]
+  const sdx = sp[1].x - sp[0].x, sdz = sp[1].z - sp[0].z;
+  const tdx = tp[1].x - tp[0].x, tdz = tp[1].z - tp[0].z;
+  const sl = Math.sqrt(sdx*sdx + sdz*sdz);
+  const tl = Math.sqrt(tdx*tdx + tdz*tdz);
 
-  // Evita quaternió NaN si els vectors són paral·lels o idèntics
-  const dot = srcDir.dot(tgtDir);
-  let q;
-  if (Math.abs(dot) > 0.9999) {
-    q = new THREE.Quaternion(); // sense rotació
-  } else {
-    q = new THREE.Quaternion().setFromUnitVectors(srcDir, tgtDir);
+  let q = new THREE.Quaternion();
+  if (sl > 1e-4 && tl > 1e-4) {
+    const su = sdx/sl, sv = sdz/sl;
+    const tu = tdx/tl, tv = tdz/tl;
+    // Angle Kabsch: de (su,sv) a (tu,tv); rotació Three.js Y = -theta
+    const phi = -Math.atan2(su*tv - sv*tu, su*tu + sv*tv);
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), phi);
   }
 
-  // Aplica translació primer
+  // Translació → rotació entorn tp[0]
   srcCloud.position.add(tr);
-  // Aplica rotació al voltant de tp[0]
   srcCloud.position.sub(tp[0]);
   srcCloud.position.applyQuaternion(q);
   srcCloud.position.add(tp[0]);
@@ -547,33 +548,39 @@ function applyAlign2pt(srcCloud, sp, tp) {
 function applyAlign3pt(srcCloud, sp, tp) {
   if (!srcCloud) return;
 
-  function makeFrame(pts) {
-    const x = pts[1].clone().sub(pts[0]).normalize();
-    const n = new THREE.Vector3().crossVectors(
-      pts[1].clone().sub(pts[0]),
-      pts[2].clone().sub(pts[0])
-    ).normalize();
-    const y = new THREE.Vector3().crossVectors(n, x).normalize();
-    return { o: pts[0].clone(), x, y, z: n };
+  const n = sp.length;
+
+  // Centroids en XZ
+  let scx=0, scz=0, tcx=0, tcz=0;
+  for (let i=0; i<n; i++) { scx+=sp[i].x; scz+=sp[i].z; tcx+=tp[i].x; tcz+=tp[i].z; }
+  scx/=n; scz/=n; tcx/=n; tcz/=n;
+
+  // Kabsch 2D: rotació òptima mínims quadrats en el pla XZ
+  let num=0, den=0;
+  for (let i=0; i<n; i++) {
+    const su=sp[i].x-scx, sv=sp[i].z-scz;
+    const tu=tp[i].x-tcx, tv=tp[i].z-tcz;
+    num += su*tv - sv*tu;
+    den += su*tu + sv*tv;
   }
+  // rotació Three.js entorn Y = -theta_Kabsch
+  const phi = -Math.atan2(num, den);
+  const q   = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), phi);
 
-  const sf = makeFrame(sp);
-  const tf = makeFrame(tp);
+  // Translació: tc - R·sc
+  const cosP = Math.cos(phi), sinP = Math.sin(phi);
+  const trX = tcx - (scx*cosP + scz*sinP);
+  const trZ = tcz - (-scx*sinP + scz*cosP);
+  let trY = 0;
+  for (let i=0; i<n; i++) trY += tp[i].y - sp[i].y;
+  trY /= n;
 
-  const sm = new THREE.Matrix4().makeBasis(sf.x, sf.y, sf.z);
-  const tm = new THREE.Matrix4().makeBasis(tf.x, tf.y, tf.z);
-  const R  = new THREE.Matrix4().multiplyMatrices(tm, new THREE.Matrix4().copy(sm).invert());
-  const q  = new THREE.Quaternion().setFromRotationMatrix(R);
-
-  // FIX: la posició actual del núvol ja forma part del seu position en espai món
-  // Cal aplicar la rotació al position actual i després afegir la translació
+  // Aplica al núvol
   srcCloud.position.applyQuaternion(q);
   srcCloud.quaternion.premultiply(q);
-
-  // sp[0] (rotat) ha d'anar a tp[0]
-  const sp0Rotated = sf.o.clone().applyQuaternion(q);
-  const tr = tp[0].clone().sub(sp0Rotated);
-  srcCloud.position.add(tr);
+  srcCloud.position.x += trX;
+  srcCloud.position.y += trY;
+  srcCloud.position.z += trZ;
 
   srcCloud.updateMatrixWorld(true);
   syncClipBox(srcCloud);
