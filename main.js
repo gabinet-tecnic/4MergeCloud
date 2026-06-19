@@ -707,9 +707,9 @@ function startLassoErase() {
   if (orthoControls) orthoControls.enabled = false;
 
   const lc = document.getElementById('lassoCanvas');
-  lc.width  = lc.offsetWidth;
-  lc.height = lc.offsetHeight;
-  lc.style.display = 'block';
+  lc.style.display = 'block'; // primer mostrar, després llegir mida
+  lc.width  = lc.offsetWidth  || window.innerWidth;
+  lc.height = lc.offsetHeight || window.innerHeight;
   document.getElementById('lassoBadge').style.display = 'block';
   document.getElementById('btnLassoErase').classList.add('active');
 }
