@@ -200,27 +200,26 @@
       white-space: nowrap;
     }
 
-    /* ── View toolbars ── */
-    .view-toolbar {
+    /* ── View toolbar ── */
+    #viewToolbar {
       position: absolute;
+      right: 10px;
       bottom: 10px;
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
       gap: 5px;
       z-index: 15;
     }
-    .view-toolbar.bottom-left { left: 10px; }
-    .view-toolbar.bottom-right { right: 10px; }
 
     .view-btn {
-      width: 34px;
-      height: 34px;
+      width: 38px;
+      height: 38px;
       border: 1px solid #555;
       background: rgba(30, 30, 30, 0.88);
       color: #ccc;
       padding: 0;
       cursor: pointer;
-      font-size: 10px;
+      font-size: 11px;
       font-weight: bold;
       border-radius: 5px;
       line-height: 1.2;
@@ -249,20 +248,6 @@
       width: auto;
     }
 
-    /* Viewer label */
-    .viewer-label {
-      position: absolute;
-      top: 6px;
-      font-size: 11px;
-      color: #888;
-      z-index: 10;
-      pointer-events: none;
-      background: rgba(0,0,0,0.4);
-      padding: 2px 6px;
-      border-radius: 3px;
-    }
-    #labelA { left: 6px; }
-    #labelB { left: calc(50% + 6px); display: none; }
   </style>
 </head>
 <body>
@@ -317,41 +302,23 @@
     <div class="sep"></div>
     <button id="merge">&#8659; Merge &amp; download XYZ</button>
     <button id="btnReset" style="background:#5a1010;border-color:#aa2020;color:#fcc;">&#9851; Reset all</button>
-
-    <div class="sep"></div>
-    <button id="splitView">&#9646;&#9646; Split screen</button>
-    <button id="singleView">&#9646; Single view</button>
   </div>
 
   <div id="viewer">
-    <div id="splitDivider"></div>
-    <div id="labelA" class="viewer-label">Viewer A</div>
-    <div id="labelB" class="viewer-label">Viewer B</div>
-
     <div id="loadingBadge">&#9203; Loading file...</div>
     <div id="measureBadge">&#128207; Measure mode — click two points on the cloud</div>
     <div id="alignBadge"></div>
 
     <div id="measureList"></div>
 
-    <!-- View toolbar viewer A -->
-    <div id="viewToolbarA" class="view-toolbar bottom-left">
+    <!-- View toolbar (right side) -->
+    <div id="viewToolbar">
       <button id="viewA_3d"    class="view-btn" title="3D Perspective">3D</button>
       <button id="viewA_top"   class="view-btn" title="Top view">TP</button>
       <button id="viewA_front" class="view-btn" title="Front view">FR</button>
       <button id="viewA_back"  class="view-btn" title="Back view">BK</button>
       <button id="viewA_right" class="view-btn" title="Right side">RT</button>
       <button id="viewA_left"  class="view-btn" title="Left side">LT</button>
-    </div>
-
-    <!-- View toolbar viewer B -->
-    <div id="viewToolbarB" class="view-toolbar bottom-right">
-      <button id="viewB_3d"    class="view-btn" title="3D Perspective (B)">3D</button>
-      <button id="viewB_top"   class="view-btn" title="Top view (B)">TP</button>
-      <button id="viewB_front" class="view-btn" title="Front view (B)">FR</button>
-      <button id="viewB_back"  class="view-btn" title="Back view (B)">BK</button>
-      <button id="viewB_right" class="view-btn" title="Right side (B)">RT</button>
-      <button id="viewB_left"  class="view-btn" title="Left side (B)">LT</button>
     </div>
   </div>
 

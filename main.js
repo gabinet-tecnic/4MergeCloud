@@ -683,7 +683,12 @@ function exportClipSectionDXF() {
     }
 
     const pts = [...grid.values()].slice(0, 100000);
-    let dxf = '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n';
+    // $PDMODE=3 → punts visibles com a creu; $PDSIZE negatiu = % viewport
+    let dxf  = '0\nSECTION\n2\nHEADER\n';
+    dxf += '9\n$ACADVER\n1\nAC1015\n';
+    dxf += '9\n$PDMODE\n70\n3\n';
+    dxf += '9\n$PDSIZE\n40\n-1.0\n';
+    dxf += '0\nENDSEC\n';
     dxf += '0\nSECTION\n2\nENTITIES\n';
     for (const [x, y] of pts) {
       dxf += `0\nPOINT\n8\nSECCIO\n10\n${x.toFixed(4)}\n20\n${y.toFixed(4)}\n30\n0.0\n`;
@@ -694,7 +699,9 @@ function exportClipSectionDXF() {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `seccio_${viewName}.dxf`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 
     if (badge) badge.style.display = 'none';
