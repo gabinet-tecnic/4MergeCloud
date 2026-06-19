@@ -229,14 +229,32 @@
 
     .hidden { display: none !important; }
 
-    /* Lasso canvas overlay */
+    /* Lasso canvas overlay — purament visual, mai captura events */
     #lassoCanvas {
       position: absolute;
       inset: 0;
       display: none;
-      cursor: crosshair;
+      pointer-events: none;
       z-index: 10;
-      touch-action: none;
+    }
+    /* Cursor crosshair sobre el viewer quan el lasso és actiu */
+    #viewer.lasso-active {
+      cursor: crosshair;
+    }
+    #lassoCancel {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      display: none;
+      background: rgba(140, 20, 20, 0.95);
+      color: #fff;
+      border: 1px solid #ff6060;
+      border-radius: 6px;
+      padding: 8px 20px;
+      font-size: 14px;
+      cursor: pointer;
     }
     #lassoBadge {
       position: absolute;
@@ -335,6 +353,7 @@
 
   <div id="viewer">
     <canvas id="lassoCanvas"></canvas>
+    <button id="lassoCancel">&#10005; Cancel lasso</button>
     <div id="loadingBadge">&#9203; Loading file...</div>
     <div id="measureBadge">&#128207; Measure mode — click two points on the cloud</div>
     <div id="lassoBadge">&#9999; Lasso erase — draw a shape, release to delete</div>

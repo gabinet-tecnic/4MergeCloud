@@ -695,42 +695,122 @@ function matchFeaturesRANSAC(srcFeats, tgtFeats, maxIter = 400) {
 // ─────────────────────────────────────────────
 // ── Lasso Erase ──────────────────────────────────────────────────────────────
 let lassoErasing = false;
-let lassoPath = []; // [{x,y}] coordenades del canvas
+let lassoPath  = [];
+let lassoDrawing = false;
+let lassoW = 1, lassoH = 1; // mida del viewer en el moment d'activar
 
 function startLassoErase() {
   lassoErasing = true;
-  lassoPath = [];
-  measuring = false;
+  lassoPath    = [];
+  lassoDrawing = false;
+  measuring    = false;
   document.getElementById('measureBadge').style.display = 'none';
   transformControls.detach();
+  // No desactivem controls aquí — els gestionem via stopPropagation als events
 
-  // Desactiva els events del canvas Three.js perquè el lasso els rebi
-  if (renderer) renderer.domElement.style.pointerEvents = 'none';
+  const viewer = document.getElementById('viewer');
+  lassoW = viewer.offsetWidth  || window.innerWidth;
+  lassoH = viewer.offsetHeight || window.innerHeight;
 
+  // Canvas visual: mida = viewer, sempre pointer-events:none
   const lc = document.getElementById('lassoCanvas');
+  lc.width  = lassoW;
+  lc.height = lassoH;
   lc.style.display = 'block';
-  lc.width  = lc.offsetWidth  || window.innerWidth;
-  lc.height = lc.offsetHeight || window.innerHeight;
+
   document.getElementById('lassoBadge').style.display = 'block';
   document.getElementById('btnLassoErase').classList.add('active');
+  document.getElementById('lassoCancel').style.display = 'block';
+  viewer.classList.add('lasso-active');
+
+  // Bloquem el canvas Three.js perquè els events no arribin a OrbitControls
+  if (renderer) renderer.domElement.style.pointerEvents = 'none';
+  // Afegim listeners al viewer (on arriben els events quan el canvas gl no els captura)
+  viewer.addEventListener('pointerdown',   _lassoDown,   { passive: false });
+  viewer.addEventListener('pointermove',   _lassoMove,   { passive: false });
+  viewer.addEventListener('pointerup',     _lassoUp,     { passive: false });
+  viewer.addEventListener('pointercancel', _lassoCancel, { passive: false });
+  // Fallback tàctil per a navegadors que no suportin pointer events
+  viewer.addEventListener('touchstart',    _lassoTouchStart, { passive: false });
+  viewer.addEventListener('touchmove',     _lassoTouchMove,  { passive: false });
+  viewer.addEventListener('touchend',      _lassoTouchEnd,   { passive: false });
 }
 
 function stopLassoErase() {
   lassoErasing = false;
-  lassoPath = [];
+  lassoPath    = [];
+  lassoDrawing = false;
 
-  // Restaura els events del canvas Three.js
+  const viewer = document.getElementById('viewer');
+  viewer.removeEventListener('pointerdown',   _lassoDown);
+  viewer.removeEventListener('pointermove',   _lassoMove);
+  viewer.removeEventListener('pointerup',     _lassoUp);
+  viewer.removeEventListener('pointercancel', _lassoCancel);
+  viewer.removeEventListener('touchstart',    _lassoTouchStart);
+  viewer.removeEventListener('touchmove',     _lassoTouchMove);
+  viewer.removeEventListener('touchend',      _lassoTouchEnd);
+
   if (renderer) renderer.domElement.style.pointerEvents = 'auto';
+  document.getElementById('viewer').classList.remove('lasso-active');
 
   const lc = document.getElementById('lassoCanvas');
   lc.style.display = 'none';
-  const ctx = lc.getContext('2d');
-  ctx.clearRect(0, 0, lc.width, lc.height);
-  document.getElementById('lassoBadge').style.display = 'none';
+  lc.getContext('2d').clearRect(0, 0, lc.width, lc.height);
+  document.getElementById('lassoBadge').style.display   = 'none';
+  document.getElementById('lassoCancel').style.display  = 'none';
   document.getElementById('btnLassoErase').classList.remove('active');
 }
 
-function drawLassoPath() {
+function _viewerPos(clientX, clientY) {
+  const r = document.getElementById('viewer').getBoundingClientRect();
+  return { x: clientX - r.left, y: clientY - r.top };
+}
+
+function _lassoDown(e) {
+  if (!lassoErasing) return;
+  // Ignora clics al panell de controls
+  if (e.target.closest && e.target.closest('#controls')) return;
+  e.preventDefault(); e.stopPropagation();
+  lassoDrawing = true;
+  lassoPath = [_viewerPos(e.clientX, e.clientY)];
+}
+function _lassoMove(e) {
+  if (!lassoErasing || !lassoDrawing) return;
+  e.preventDefault(); e.stopPropagation();
+  lassoPath.push(_viewerPos(e.clientX, e.clientY));
+  _drawLasso();
+}
+function _lassoUp(e) {
+  if (!lassoErasing || !lassoDrawing) return;
+  e.preventDefault(); e.stopPropagation();
+  lassoDrawing = false;
+  applyLassoErase();
+}
+function _lassoCancel() { if (lassoErasing) stopLassoErase(); }
+
+function _lassoTouchStart(e) {
+  if (!lassoErasing) return;
+  if (e.target.closest && e.target.closest('#controls')) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  lassoDrawing = true;
+  lassoPath = [_viewerPos(t.clientX, t.clientY)];
+}
+function _lassoTouchMove(e) {
+  if (!lassoErasing || !lassoDrawing) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  lassoPath.push(_viewerPos(t.clientX, t.clientY));
+  _drawLasso();
+}
+function _lassoTouchEnd(e) {
+  if (!lassoErasing || !lassoDrawing) return;
+  e.preventDefault();
+  lassoDrawing = false;
+  applyLassoErase();
+}
+
+function _drawLasso() {
   const lc = document.getElementById('lassoCanvas');
   const ctx = lc.getContext('2d');
   ctx.clearRect(0, 0, lc.width, lc.height);
@@ -739,10 +819,10 @@ function drawLassoPath() {
   ctx.moveTo(lassoPath[0].x, lassoPath[0].y);
   for (let i = 1; i < lassoPath.length; i++) ctx.lineTo(lassoPath[i].x, lassoPath[i].y);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(255, 60, 60, 0.18)';
+  ctx.fillStyle   = 'rgba(255, 60, 60, 0.15)';
   ctx.fill();
   ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
-  ctx.lineWidth = 2;
+  ctx.lineWidth   = 2;
   ctx.setLineDash([5, 3]);
   ctx.stroke();
 }
@@ -752,9 +832,8 @@ function pointInPolygon(px, py, poly) {
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const xi = poly[i].x, yi = poly[i].y;
     const xj = poly[j].x, yj = poly[j].y;
-    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
       inside = !inside;
-    }
   }
   return inside;
 }
@@ -762,18 +841,16 @@ function pointInPolygon(px, py, poly) {
 function applyLassoErase() {
   if (lassoPath.length < 3) { stopLassoErase(); return; }
 
-  const lc = document.getElementById('lassoCanvas');
-  const W = lc.width, H = lc.height;
+  const W = lassoW, H = lassoH;
   const activeCam = (useOrtho && orthoCamera) ? orthoCamera : camera;
-  const targets = selectedCloud ? [selectedCloud] : clouds.filter(c => c.visible);
+  const targets   = selectedCloud ? [selectedCloud] : clouds.filter(c => c.visible);
   if (targets.length === 0) { stopLassoErase(); return; }
 
   document.getElementById('loadingBadge').style.display = 'block';
+  document.getElementById('lassoBadge').style.display   = 'none';
 
-  // Defer so the browser paints the loading badge before the heavy loop
   setTimeout(() => {
     const vProj = new THREE.Vector3();
-
     for (const cloud of targets) {
       cloud.updateMatrixWorld(true);
       const mw  = cloud.matrixWorld;
@@ -784,29 +861,27 @@ function applyLassoErase() {
       const newPos = [], newCol = [];
       for (let i = 0; i < pos.count; i++) {
         vProj.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mw).project(activeCam);
-        // Skip points behind the camera
-        if (vProj.z > 1) {
+        if (vProj.z > 1) { // darrere la càmera — conservar
           newPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
           if (col) newCol.push(col.getX(i), col.getY(i), col.getZ(i));
           continue;
         }
         const sx = (vProj.x + 1) / 2 * W;
         const sy = (1 - vProj.y) / 2 * H;
-        if (pointInPolygon(sx, sy, lassoPath)) continue; // esborra
+        if (pointInPolygon(sx, sy, lassoPath)) continue; // esborrar
         newPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
         if (col) newCol.push(col.getX(i), col.getY(i), col.getZ(i));
       }
 
-      if (newPos.length === pos.count * 3) continue; // res esborrat
+      if (newPos.length === pos.count * 3) continue;
 
       pushUndo(cloud, true);
-      const newGeom = new THREE.BufferGeometry();
-      newGeom.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
-      if (newCol.length) newGeom.setAttribute('color', new THREE.Float32BufferAttribute(newCol, 3));
-      newGeom.computeBoundingBox();
-      newGeom.computeBoundingSphere();
+      const ng = new THREE.BufferGeometry();
+      ng.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
+      if (newCol.length) ng.setAttribute('color', new THREE.Float32BufferAttribute(newCol, 3));
+      ng.computeBoundingBox(); ng.computeBoundingSphere();
       cloud.geometry.dispose();
-      cloud.geometry = newGeom;
+      cloud.geometry = ng;
       cloud.material.needsUpdate = true;
     }
 
@@ -816,44 +891,10 @@ function applyLassoErase() {
   }, 20);
 }
 
-// Events del lasso canvas
-(function initLassoEvents() {
-  const lc = document.getElementById('lassoCanvas');
-  let drawing = false;
-
-  function getPos(e) {
-    const r = lc.getBoundingClientRect();
-    const src = e.touches ? e.touches[0] : e;
-    return { x: src.clientX - r.left, y: src.clientY - r.top };
-  }
-
-  lc.addEventListener('pointerdown', e => {
-    if (!lassoErasing) return;
-    drawing = true;
-    lassoPath = [getPos(e)];
-    lc.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-
-  lc.addEventListener('pointermove', e => {
-    if (!lassoErasing || !drawing) return;
-    lassoPath.push(getPos(e));
-    drawLassoPath();
-    e.preventDefault();
-  });
-
-  lc.addEventListener('pointerup', e => {
-    if (!lassoErasing || !drawing) return;
-    drawing = false;
-    e.preventDefault();
-    applyLassoErase();
-  });
-
-  // Cancel with Escape
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && lassoErasing) stopLassoErase();
-  });
-})();
+// Escape per cancel·lar
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && lassoErasing) stopLassoErase();
+});
 // ─────────────────────────────────────────────────────────────────────────────
 
 function applyAndKeepClip() {
@@ -1185,6 +1226,7 @@ function setupUI() {
     cancelAlign();
     startLassoErase();
   };
+  document.getElementById('lassoCancel').onclick = stopLassoErase;
 
   // ── Mode mesura ──
   document.getElementById('toggleMeasure').onclick = () => {
