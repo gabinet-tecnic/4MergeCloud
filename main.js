@@ -576,12 +576,12 @@ function applyAlign3pt(srcCloud, sp, tp) {
 }
 
 // ─────────────────────────────────────────────
-// Auto-align per color i coordenades
+// Auto-align per color i coordenades (v2 — cel·les locals + RANSAC)
 // ─────────────────────────────────────────────
-const _CA_BINS = 6;
-function _ck(r, g, b) { return r * 36 + g * 6 + b; }
 
-function detectColorRegions(cloud, maxSamples = 20000) {
+// Detecta cel·les locals de 50cm amb color distintiu.
+// Cada cel·la és un punt de referència precís (radi ~25cm vs metres d'un centroide global).
+function detectLocalColorFeatures(cloud, cellSize = 0.5, maxSamples = 40000) {
   cloud.updateMatrixWorld(true);
   const mw = cloud.matrixWorld;
   const pos = cloud.geometry.getAttribute('position');
@@ -589,49 +589,92 @@ function detectColorRegions(cloud, maxSamples = 20000) {
   if (!pos || !col) return [];
 
   const n = pos.count, step = Math.max(1, Math.floor(n / maxSamples));
-  const bins = new Map(), v = new THREE.Vector3();
+  const cells = new Map(), v = new THREE.Vector3();
 
   for (let i = 0; i < n; i += step) {
     v.fromBufferAttribute(pos, i).applyMatrix4(mw);
-    const r = Math.min(_CA_BINS - 1, Math.floor(col.getX(i) * _CA_BINS));
-    const g = Math.min(_CA_BINS - 1, Math.floor(col.getY(i) * _CA_BINS));
-    const b = Math.min(_CA_BINS - 1, Math.floor(col.getZ(i) * _CA_BINS));
-    const k = _ck(r, g, b);
-    let bn = bins.get(k);
-    if (!bn) { bn = { r, g, b, sx: 0, sy: 0, sz: 0, n: 0 }; bins.set(k, bn); }
-    bn.sx += v.x; bn.sy += v.y; bn.sz += v.z; bn.n++;
+    const cx = Math.round(v.x / cellSize);
+    const cy = Math.round(v.y / cellSize);
+    const cz = Math.round(v.z / cellSize);
+    const key = `${cx},${cy},${cz}`;
+    let c = cells.get(key);
+    if (!c) { c = { r: 0, g: 0, b: 0, n: 0, sx: 0, sy: 0, sz: 0 }; cells.set(key, c); }
+    c.r += col.getX(i); c.g += col.getY(i); c.b += col.getZ(i);
+    c.sx += v.x; c.sy += v.y; c.sz += v.z; c.n++;
   }
 
-  const samp = Math.ceil(n / step), minN = Math.max(3, samp * 0.015);
-  const regs = [];
-  for (const [, bn] of bins) {
-    if (bn.n < minN) continue;
-    const avg = (bn.r + bn.g + bn.b) / 3;
-    const cf = Math.sqrt((bn.r - avg) ** 2 + (bn.g - avg) ** 2 + (bn.b - avg) ** 2);
-    if (cf < 0.8) continue; // skip near-gray (no distinctive)
-    regs.push({
-      r: bn.r, g: bn.g, b: bn.b, key: _ck(bn.r, bn.g, bn.b),
-      centroid: new THREE.Vector3(bn.sx / bn.n, bn.sy / bn.n, bn.sz / bn.n),
-      n: bn.n
+  const feats = [];
+  for (const [, c] of cells) {
+    if (c.n < 3) continue;
+    const r = c.r / c.n, g = c.g / c.n, b = c.b / c.n;
+    const avg = (r + g + b) / 3;
+    const cf = Math.sqrt((r - avg) ** 2 + (g - avg) ** 2 + (b - avg) ** 2);
+    if (cf < 0.08) continue; // descarta cel·les grises/blanques
+    feats.push({
+      centroid: new THREE.Vector3(c.sx / c.n, c.sy / c.n, c.sz / c.n),
+      r, g, b, cf
     });
   }
-  regs.sort((a, b) => b.n - a.n);
-  return regs.slice(0, 15);
+  // Limita a les 300 cel·les més colorides per rendiment
+  feats.sort((a, b) => b.cf - a.cf);
+  return feats.slice(0, 300);
 }
 
-function findColorMatches(srcR, tgtR, maxD = 2.0) {
-  const used = new Set(), res = [];
-  for (const s of srcR) {
-    let best = null, bd = maxD;
-    for (const t of tgtR) {
-      if (used.has(t.key)) continue;
-      const d = Math.sqrt((s.r - t.r) ** 2 + (s.g - t.g) ** 2 + (s.b - t.b) ** 2);
-      if (d < bd) { bd = d; best = t; }
+// RANSAC sobre correspondències de color:
+// prova parells aleatoris i compta quantes altres correspondències
+// són geomètricament consistents (distàncies semblants en src i tgt).
+function matchFeaturesRANSAC(srcFeats, tgtFeats, maxIter = 400) {
+  const colorDist = (a, b) => Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+  const COLOR_THRESH = 0.15;
+  const GEO_THRESH   = 0.5;  // metres — tolerància geomètrica
+  const MIN_SEP      = 1.0;  // separació mínima entre ancoratges (metres)
+
+  // Per cada feature src, trobem la millor correspondència tgt per color
+  const cands = [];
+  for (const s of srcFeats) {
+    let bestD = COLOR_THRESH, bestT = null;
+    for (const t of tgtFeats) {
+      const d = colorDist(s, t);
+      if (d < bestD) { bestD = d; bestT = t; }
     }
-    if (best) { res.push({ src: s, tgt: best, conf: 1 - bd / maxD }); used.add(best.key); }
+    if (bestT) cands.push({ src: s, tgt: bestT, cd: bestD });
   }
-  res.sort((a, b) => b.conf - a.conf);
-  return res.slice(0, 5);
+  if (cands.length < 2) return [];
+
+  // RANSAC
+  let bestInliers = [];
+  const n = cands.length;
+  const iters = Math.min(maxIter, n * (n - 1) / 2);
+
+  for (let it = 0; it < iters; it++) {
+    const i = Math.floor(Math.random() * n);
+    let j = Math.floor(Math.random() * (n - 1));
+    if (j >= i) j++;
+
+    const a = cands[i], b = cands[j];
+    const dSrc = a.src.centroid.distanceTo(b.src.centroid);
+    const dTgt = a.tgt.centroid.distanceTo(b.tgt.centroid);
+    if (dSrc < MIN_SEP || dTgt < MIN_SEP) continue;
+    if (Math.abs(dSrc - dTgt) / Math.max(dSrc, dTgt) > 0.3) continue;
+
+    const inliers = [a, b];
+    for (let k = 0; k < n; k++) {
+      if (k === i || k === j) continue;
+      const ck = cands[k];
+      const d0s = a.src.centroid.distanceTo(ck.src.centroid);
+      const d0t = a.tgt.centroid.distanceTo(ck.tgt.centroid);
+      const d1s = b.src.centroid.distanceTo(ck.src.centroid);
+      const d1t = b.tgt.centroid.distanceTo(ck.tgt.centroid);
+      if (Math.abs(d0s - d0t) < GEO_THRESH && Math.abs(d1s - d1t) < GEO_THRESH) {
+        inliers.push(ck);
+      }
+    }
+    if (inliers.length > bestInliers.length) bestInliers = [...inliers];
+  }
+
+  // Retorna els 3 millors inliers (els de menor distància de color)
+  bestInliers.sort((a, b) => a.cd - b.cd);
+  return bestInliers.slice(0, 3);
 }
 
 // ─────────────────────────────────────────────
@@ -850,29 +893,30 @@ function setupUI() {
     document.getElementById('btnApplyAutoAlign').style.display = 'none';
 
     setTimeout(() => {
-      const srcR = detectColorRegions(src);
-      const tgtR = clouds.filter(c => c !== src).flatMap(c => detectColorRegions(c));
-      const matches = findColorMatches(srcR, tgtR);
-      _autoAlignPending = matches.length ? { src, matches } : null;
+      const srcF = detectLocalColorFeatures(src);
+      const tgtF = clouds.filter(c => c !== src).flatMap(c => detectLocalColorFeatures(c));
+      res.textContent = `${srcF.length} + ${tgtF.length} punts de color... cercant RANSAC`;
 
-      if (!matches.length) {
-        res.innerHTML = '<span style="color:#f88">Cap coincidència de color trobada.<br>'
-          + '<small>Cal tenir zones de color distintiu comunes.</small></span>';
-        return;
-      }
+      setTimeout(() => {
+        const matches = matchFeaturesRANSAC(srcF, tgtF);
+        _autoAlignPending = matches.length >= 2 ? { src, matches } : null;
 
-      document.getElementById('btnApplyAutoAlign').style.display = '';
-      const scale = 255 / (_CA_BINS - 1);
-      let html = `<b>${matches.length} zona${matches.length > 1 ? 'es' : ''} coincident${matches.length > 1 ? 's' : ''}:</b><br>`;
-      for (const m of matches) {
-        const rv = Math.round(m.src.r * scale);
-        const gv = Math.round(m.src.g * scale);
-        const bv = Math.round(m.src.b * scale);
-        html += `<span style="display:inline-block;width:10px;height:10px;background:rgb(${rv},${gv},${bv});`
-              + `border:1px solid #888;margin-right:3px;vertical-align:middle"></span>`
-              + `${Math.round(m.conf * 100)}%&nbsp; `;
-      }
-      res.innerHTML = html;
+        if (!_autoAlignPending) {
+          res.innerHTML = '<span style="color:#f88">No s\'han trobat prou coincidències.<br>'
+            + '<small>Assegura\'t que els dos núvols comparteixen zones de color distintiu.</small></span>';
+          return;
+        }
+
+        document.getElementById('btnApplyAutoAlign').style.display = '';
+        let html = `<b>${matches.length} coincidències geomètriques:</b><br>`;
+        for (const m of matches) {
+          const rv = Math.round(m.src.r * 255), gv = Math.round(m.src.g * 255), bv = Math.round(m.src.b * 255);
+          const d0 = m.src.centroid.distanceTo(m.tgt.centroid).toFixed(2);
+          html += `<span style="display:inline-block;width:10px;height:10px;background:rgb(${rv},${gv},${bv});`
+                + `border:1px solid #888;margin-right:3px;vertical-align:middle"></span>Δ${d0}m&nbsp; `;
+        }
+        res.innerHTML = html;
+      }, 20);
     }, 20);
   };
 
@@ -882,15 +926,8 @@ function setupUI() {
     const sp = matches.map(m => m.src.centroid.clone());
     const tp = matches.map(m => m.tgt.centroid.clone());
     pushUndo(src);
-    if (matches.length >= 3)      applyAlign3pt(src, sp, tp);
-    else if (matches.length >= 2) applyAlign2pt(src, sp, tp);
-    else {
-      const tr = tp[0].clone().sub(sp[0]);
-      src.position.add(tr);
-      src.updateMatrixWorld();
-      syncClipBox(src);
-      selectCloud(src);
-    }
+    if (matches.length >= 3) applyAlign3pt(src, sp, tp);
+    else                     applyAlign2pt(src, sp, tp);
     document.getElementById('autoAlignPanel').style.display = 'none';
     _autoAlignPending = null;
   };
