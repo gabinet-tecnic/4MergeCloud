@@ -229,6 +229,31 @@
 
     .hidden { display: none !important; }
 
+    /* Lasso canvas overlay */
+    #lassoCanvas {
+      position: absolute;
+      inset: 0;
+      display: none;
+      cursor: crosshair;
+      z-index: 10;
+      touch-action: none;
+    }
+    #lassoBadge {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(160, 20, 20, 0.92);
+      color: #fff;
+      padding: 5px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      z-index: 25;
+      display: none;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
     /* Auto-align panel */
     #autoAlignPanel {
       display: none;
@@ -297,6 +322,9 @@
     </div>
 
     <div class="sep"></div>
+    <button id="btnLassoErase">&#9999; Lasso erase</button>
+
+    <div class="sep"></div>
     <button id="toggleMeasure">&#128207; Measure mode</button>
     <button id="clearMeasures">&#128465; Clear measures</button>
 
@@ -306,8 +334,10 @@
   </div>
 
   <div id="viewer">
+    <canvas id="lassoCanvas"></canvas>
     <div id="loadingBadge">&#9203; Loading file...</div>
     <div id="measureBadge">&#128207; Measure mode — click two points on the cloud</div>
+    <div id="lassoBadge">&#9999; Lasso erase — draw a shape, release to delete</div>
     <div id="alignBadge"></div>
 
     <div id="measureList"></div>

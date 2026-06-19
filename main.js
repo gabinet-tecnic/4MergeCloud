@@ -337,6 +337,7 @@ function resetAll() {
   alignMode = 0;
   alignPhase = 'src';
   undoStack.length = 0;
+  if (lassoErasing) stopLassoErase();
 
   transformControls.detach();
   setMode('none');
@@ -692,6 +693,166 @@ function matchFeaturesRANSAC(srcFeats, tgtFeats, maxIter = 400) {
 // ─────────────────────────────────────────────
 // Aplicar tall permanent (crop)
 // ─────────────────────────────────────────────
+// ── Lasso Erase ──────────────────────────────────────────────────────────────
+let lassoErasing = false;
+let lassoPath = []; // [{x,y}] coordenades del canvas
+
+function startLassoErase() {
+  lassoErasing = true;
+  lassoPath = [];
+  measuring = false;
+  document.getElementById('measureBadge').style.display = 'none';
+  transformControls.detach();
+  controls.enabled = false;
+  if (orthoControls) orthoControls.enabled = false;
+
+  const lc = document.getElementById('lassoCanvas');
+  lc.width  = lc.offsetWidth;
+  lc.height = lc.offsetHeight;
+  lc.style.display = 'block';
+  document.getElementById('lassoBadge').style.display = 'block';
+  document.getElementById('btnLassoErase').classList.add('active');
+}
+
+function stopLassoErase() {
+  lassoErasing = false;
+  lassoPath = [];
+  const lc = document.getElementById('lassoCanvas');
+  lc.style.display = 'none';
+  const ctx = lc.getContext('2d');
+  ctx.clearRect(0, 0, lc.width, lc.height);
+  document.getElementById('lassoBadge').style.display = 'none';
+  document.getElementById('btnLassoErase').classList.remove('active');
+  controls.enabled = true;
+  if (orthoControls) orthoControls.enabled = true;
+}
+
+function drawLassoPath() {
+  const lc = document.getElementById('lassoCanvas');
+  const ctx = lc.getContext('2d');
+  ctx.clearRect(0, 0, lc.width, lc.height);
+  if (lassoPath.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(lassoPath[0].x, lassoPath[0].y);
+  for (let i = 1; i < lassoPath.length; i++) ctx.lineTo(lassoPath[i].x, lassoPath[i].y);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255, 60, 60, 0.18)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.stroke();
+}
+
+function pointInPolygon(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function applyLassoErase() {
+  if (lassoPath.length < 3) { stopLassoErase(); return; }
+
+  const lc = document.getElementById('lassoCanvas');
+  const W = lc.width, H = lc.height;
+  const activeCam = (useOrtho && orthoCamera) ? orthoCamera : camera;
+  const targets = selectedCloud ? [selectedCloud] : clouds.filter(c => c.visible);
+  if (targets.length === 0) { stopLassoErase(); return; }
+
+  document.getElementById('loadingBadge').style.display = 'block';
+
+  // Defer so the browser paints the loading badge before the heavy loop
+  setTimeout(() => {
+    const vProj = new THREE.Vector3();
+
+    for (const cloud of targets) {
+      cloud.updateMatrixWorld(true);
+      const mw  = cloud.matrixWorld;
+      const pos = cloud.geometry.getAttribute('position');
+      const col = cloud.geometry.getAttribute('color');
+      if (!pos) continue;
+
+      const newPos = [], newCol = [];
+      for (let i = 0; i < pos.count; i++) {
+        vProj.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mw).project(activeCam);
+        // Skip points behind the camera
+        if (vProj.z > 1) {
+          newPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+          if (col) newCol.push(col.getX(i), col.getY(i), col.getZ(i));
+          continue;
+        }
+        const sx = (vProj.x + 1) / 2 * W;
+        const sy = (1 - vProj.y) / 2 * H;
+        if (pointInPolygon(sx, sy, lassoPath)) continue; // esborra
+        newPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+        if (col) newCol.push(col.getX(i), col.getY(i), col.getZ(i));
+      }
+
+      if (newPos.length === pos.count * 3) continue; // res esborrat
+
+      pushUndo(cloud, true);
+      const newGeom = new THREE.BufferGeometry();
+      newGeom.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
+      if (newCol.length) newGeom.setAttribute('color', new THREE.Float32BufferAttribute(newCol, 3));
+      newGeom.computeBoundingBox();
+      newGeom.computeBoundingSphere();
+      cloud.geometry.dispose();
+      cloud.geometry = newGeom;
+      cloud.material.needsUpdate = true;
+    }
+
+    updateRaycasterThreshold();
+    document.getElementById('loadingBadge').style.display = 'none';
+    stopLassoErase();
+  }, 20);
+}
+
+// Events del lasso canvas
+(function initLassoEvents() {
+  const lc = document.getElementById('lassoCanvas');
+  let drawing = false;
+
+  function getPos(e) {
+    const r = lc.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+
+  lc.addEventListener('pointerdown', e => {
+    if (!lassoErasing) return;
+    drawing = true;
+    lassoPath = [getPos(e)];
+    lc.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  lc.addEventListener('pointermove', e => {
+    if (!lassoErasing || !drawing) return;
+    lassoPath.push(getPos(e));
+    drawLassoPath();
+    e.preventDefault();
+  });
+
+  lc.addEventListener('pointerup', e => {
+    if (!lassoErasing || !drawing) return;
+    drawing = false;
+    e.preventDefault();
+    applyLassoErase();
+  });
+
+  // Cancel with Escape
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && lassoErasing) stopLassoErase();
+  });
+})();
+// ─────────────────────────────────────────────────────────────────────────────
+
 function applyAndKeepClip() {
   const cloud = selectedCloud || clouds.find(c => c.userData.clipBox);
   if (!cloud || !cloud.userData.clipBox) { alert(T.noBoxCreated); return; }
@@ -1014,6 +1175,13 @@ function setupUI() {
       }
     }
   });
+
+  // ── Lasso erase ──
+  document.getElementById('btnLassoErase').onclick = () => {
+    if (lassoErasing) { stopLassoErase(); return; }
+    cancelAlign();
+    startLassoErase();
+  };
 
   // ── Mode mesura ──
   document.getElementById('toggleMeasure').onclick = () => {
