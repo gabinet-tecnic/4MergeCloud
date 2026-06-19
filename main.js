@@ -703,11 +703,12 @@ function startLassoErase() {
   measuring = false;
   document.getElementById('measureBadge').style.display = 'none';
   transformControls.detach();
-  controls.enabled = false;
-  if (orthoControls) orthoControls.enabled = false;
+
+  // Desactiva els events del canvas Three.js perquè el lasso els rebi
+  if (renderer) renderer.domElement.style.pointerEvents = 'none';
 
   const lc = document.getElementById('lassoCanvas');
-  lc.style.display = 'block'; // primer mostrar, després llegir mida
+  lc.style.display = 'block';
   lc.width  = lc.offsetWidth  || window.innerWidth;
   lc.height = lc.offsetHeight || window.innerHeight;
   document.getElementById('lassoBadge').style.display = 'block';
@@ -717,14 +718,16 @@ function startLassoErase() {
 function stopLassoErase() {
   lassoErasing = false;
   lassoPath = [];
+
+  // Restaura els events del canvas Three.js
+  if (renderer) renderer.domElement.style.pointerEvents = 'auto';
+
   const lc = document.getElementById('lassoCanvas');
   lc.style.display = 'none';
   const ctx = lc.getContext('2d');
   ctx.clearRect(0, 0, lc.width, lc.height);
   document.getElementById('lassoBadge').style.display = 'none';
   document.getElementById('btnLassoErase').classList.remove('active');
-  controls.enabled = true;
-  if (orthoControls) orthoControls.enabled = true;
 }
 
 function drawLassoPath() {
