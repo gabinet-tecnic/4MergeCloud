@@ -92,12 +92,13 @@ let measurements = [];
 const undoStack = [];
 const MAX_UNDO = 20;
 
-function pushUndo(cloud) {
+function pushUndo(cloud, saveGeometry = false) {
   if (!cloud) return;
   undoStack.push({
     cloud,
     position: cloud.position.clone(),
-    quaternion: cloud.quaternion.clone()
+    quaternion: cloud.quaternion.clone(),
+    geometry: saveGeometry ? cloud.geometry : null  // referència (no còpia)
   });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
   updateUndoBtn();
@@ -109,6 +110,10 @@ function doUndo() {
   const cloud = state.cloud;
   cloud.position.copy(state.position);
   cloud.quaternion.copy(state.quaternion);
+  if (state.geometry && state.geometry !== cloud.geometry) {
+    cloud.geometry.dispose();
+    cloud.geometry = state.geometry;
+  }
   cloud.updateMatrixWorld(true);
   const box = cloud.userData.clipBox;
   if (box && cloud.userData.boxRelMatrix) {
@@ -678,6 +683,58 @@ function matchFeaturesRANSAC(srcFeats, tgtFeats, maxIter = 400) {
 }
 
 // ─────────────────────────────────────────────
+// Aplicar tall permanent (crop)
+// ─────────────────────────────────────────────
+function applyAndKeepClip() {
+  const cloud = selectedCloud || clouds.find(c => c.userData.clipBox);
+  if (!cloud || !cloud.userData.clipBox) { alert(T.noBoxCreated); return; }
+
+  const box = cloud.userData.clipBox;
+  box.updateMatrixWorld(true);
+  const planes = LOCAL_CLIP_PLANES.map(p => p.clone().applyMatrix4(box.matrixWorld));
+
+  cloud.updateMatrixWorld(true);
+  const mw   = cloud.matrixWorld;
+  const pos  = cloud.geometry.getAttribute('position');
+  const col  = cloud.geometry.getAttribute('color');
+  if (!pos) return;
+
+  const v = new THREE.Vector3();
+  const newPos = [], newCol = [];
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+    if (!planes.every(p => p.distanceToPoint(v) >= 0)) continue;
+    newPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    if (col) newCol.push(col.getX(i), col.getY(i), col.getZ(i));
+  }
+
+  if (newPos.length === 0) { alert('La caixa no conté cap punt.'); return; }
+
+  // Guardem geometria anterior per poder fer undo
+  pushUndo(cloud, true);
+
+  const newGeom = new THREE.BufferGeometry();
+  newGeom.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
+  if (newCol.length) newGeom.setAttribute('color', new THREE.Float32BufferAttribute(newCol, 3));
+  newGeom.computeBoundingBox();
+  newGeom.computeBoundingSphere();
+
+  // Substituïm la geometria (l'antiga queda guardada a l'undo stack)
+  cloud.geometry = newGeom;
+  cloud.material.clippingPlanes = [];
+  cloud.material.needsUpdate = true;
+
+  // Eliminem la caixa
+  removeClipBox();
+  updateRaycasterThreshold();
+  selectCloud(cloud);
+
+  const kept = newPos.length / 3;
+  console.log(`Crop aplicat: ${kept.toLocaleString()} punts conservats`);
+}
+
+// ─────────────────────────────────────────────
 // Exportar secció de la caixa de tall com a DXF
 // ─────────────────────────────────────────────
 function exportClipSectionDXF() {
@@ -870,6 +927,7 @@ function setupUI() {
 
   document.getElementById('moveClipBox').onclick   = () => withClipBox('translate');
   document.getElementById('rotateClipBox').onclick = () => withClipBox('rotate');
+  document.getElementById('applyClipBox').onclick  = applyAndKeepClip;
   document.getElementById('removeClipBox').onclick = () => { removeClipBox(); setClipBoxBtnActive(null); };
   document.getElementById('btnUndo').onclick = doUndo;
 
