@@ -2587,6 +2587,350 @@ function onMouseWheel(event) {
 }
 
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// AI Assistant — Claude API integration
+// ─────────────────────────────────────────────
+
+const AI_TOOLS = [
+  {
+    name: 'change_view',
+    description: 'Change the 3D viewer camera to a preset view angle.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        view: { type: 'string', enum: ['3d','top','front','back','right','left'],
+                description: '3d=perspective, top=top-down plan, front=front elevation, back=rear, right=right side, left=left side' }
+      },
+      required: ['view']
+    }
+  },
+  {
+    name: 'set_transform_mode',
+    description: 'Activate move (translate) or rotate mode for the selected cloud.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['translate','rotate'] }
+      },
+      required: ['mode']
+    }
+  },
+  {
+    name: 'apply_noise_filter',
+    description: 'Remove statistical outlier (noise) points from the selected or first cloud.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sigma: { type: 'number', description: '1.5=very aggressive, 2.0=normal, 3.0=conservative' },
+        k: { type: 'number', description: 'Number of nearest neighbours (default 10)' }
+      }
+    }
+  },
+  {
+    name: 'apply_icp_alignment',
+    description: 'Run ICP fine alignment to register the selected cloud to the reference cloud. Requires approximate manual pre-alignment first.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'create_clipping_box',
+    description: 'Create a clipping box around the selected cloud for cropping.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'apply_clip_permanent',
+    description: 'Apply the clipping box permanently (crop and discard points outside the box).',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'remove_clipping_box',
+    description: 'Remove the current clipping box without applying the crop.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'start_erase_tool',
+    description: 'Activate the erase tool so the user can delete points by drawing a rectangle or freehand shape.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['rect','lasso'], description: 'rect=rectangle drag, lasso=freehand' }
+      },
+      required: ['mode']
+    }
+  },
+  {
+    name: 'toggle_annotation',
+    description: 'Start or stop the drawing/annotation overlay on the viewport.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start','stop'] }
+      },
+      required: ['action']
+    }
+  },
+  {
+    name: 'undo_last_action',
+    description: 'Undo the last action (erase, noise filter, clip, etc.).',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'merge_and_download',
+    description: 'Merge all loaded clouds into one and download the result as an XYZ file.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'export_section_dxf',
+    description: 'Export the current clipping section as a DXF file.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'get_app_state',
+    description: 'Get the current state of the application: clouds loaded, selected cloud, number of points, etc.',
+    input_schema: { type: 'object', properties: {} }
+  }
+];
+
+function _aiGetState() {
+  return {
+    clouds: clouds.map((c, i) => ({
+      id: i,
+      name: c.name || `cloud_${i}`,
+      points: c.geometry.getAttribute('position').count,
+      selected: c === selectedCloud,
+      visible: c.visible
+    })),
+    selectedCloud: selectedCloud ? clouds.indexOf(selectedCloud) : -1,
+    totalClouds: clouds.length,
+    currentMode: appMode,
+    hasClipBox: !!document.querySelector('.clip-box-mesh') || clouds.some(c => c.userData && c.userData.clipBox)
+  };
+}
+
+async function _executeAITool(name, input) {
+  switch (name) {
+    case 'change_view': {
+      const btn = document.getElementById('viewA_' + input.view);
+      if (btn) btn.click();
+      return `Vista canviada a: ${input.view}`;
+    }
+    case 'set_transform_mode': {
+      const btn = document.getElementById(input.mode === 'translate' ? 'modeTranslate' : 'modeRotate');
+      if (btn) btn.click();
+      return `Mode ${input.mode === 'translate' ? 'moviment' : 'rotació'} activat.`;
+    }
+    case 'apply_noise_filter': {
+      const cloud = selectedCloud || clouds[0];
+      if (!cloud) return 'No hi ha núvols carregats.';
+      const sigma = input.sigma || 2.0;
+      const k = input.k || 10;
+      await removeNoiseFromCloud(cloud, k, sigma);
+      return `Filtre de soroll aplicat (σ=${sigma}, K=${k}).`;
+    }
+    case 'apply_icp_alignment': {
+      if (clouds.length < 2) return 'Cal tenir almenys 2 núvols per ICP.';
+      await applyICP();
+      return 'Alineació ICP completada.';
+    }
+    case 'create_clipping_box': {
+      document.getElementById('createClipBox')?.click();
+      return 'Caixa de tall creada.';
+    }
+    case 'apply_clip_permanent': {
+      applyAndKeepClip();
+      return 'Tall aplicat permanentment.';
+    }
+    case 'remove_clipping_box': {
+      document.getElementById('removeClipBox')?.click();
+      return 'Caixa de tall eliminada.';
+    }
+    case 'start_erase_tool': {
+      _startErase(input.mode || 'rect');
+      return `Eina d'esborrat (${input.mode}) activada. Dibuixa sobre la vista per esborrar punts.`;
+    }
+    case 'toggle_annotation': {
+      if (input.action === 'start') {
+        if (!_annActive) document.getElementById('btnAnnotate')?.click();
+        return 'Mode de dibuix activat.';
+      } else {
+        if (_annActive) stopAnnotate();
+        return 'Mode de dibuix desactivat.';
+      }
+    }
+    case 'undo_last_action': {
+      doUndo();
+      return 'Acció desfeta.';
+    }
+    case 'merge_and_download': {
+      document.getElementById('merge')?.click();
+      return 'Fusió iniciada — es descarregarà el fitxer XYZ.';
+    }
+    case 'export_section_dxf': {
+      exportClipSectionDXF();
+      return 'Exportació DXF iniciada.';
+    }
+    case 'get_app_state': {
+      const st = _aiGetState();
+      const desc = st.clouds.length === 0
+        ? 'No hi ha núvols carregats.'
+        : st.clouds.map(c => `• ${c.name} (${c.points.toLocaleString()} pts)${c.selected ? ' ← seleccionat' : ''}`).join('\n');
+      return desc;
+    }
+    default:
+      return `Eina desconeguda: ${name}`;
+  }
+}
+
+function _aiAddMsg(text, cls) {
+  const box = document.getElementById('aiMessages');
+  if (!box) return;
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = text;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendAICommand(text) {
+  const apiKey = localStorage.getItem('ai_api_key');
+  if (!apiKey) {
+    _aiAddMsg('⚠ Cal guardar la clau API primer (sk-ant-...).', 'ai-e');
+    return;
+  }
+  if (!text.trim()) return;
+
+  _aiAddMsg('▶ ' + text, 'ai-u');
+
+  const state = _aiGetState();
+  const systemPrompt = `Ets l'assistent de l'app 4 Merge Cloud, un visor web de núvols de punts 3D (XYZ/PLY).
+Estat actual: ${JSON.stringify(state)}.
+Interpreta les ordres de l'usuari (en català, castellà o anglès) i crida les funcions apropiades.
+Pots cridar múltiples eines en seqüència si cal. Respon de forma molt breu en l'idioma de l'usuari.`;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: text }],
+        tools: AI_TOOLS
+      })
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      _aiAddMsg('Error API: ' + (err.error?.message || resp.status), 'ai-e');
+      return;
+    }
+
+    const data = await resp.json();
+    let hasText = false;
+
+    for (const block of (data.content || [])) {
+      if (block.type === 'text' && block.text.trim()) {
+        _aiAddMsg(block.text.trim(), 'ai-a');
+        hasText = true;
+      } else if (block.type === 'tool_use') {
+        _aiAddMsg('⚙ ' + block.name + '…', 'ai-x');
+        const result = await _executeAITool(block.name, block.input || {});
+        _aiAddMsg('✓ ' + result, 'ai-a');
+      }
+    }
+
+    if (!hasText && (data.content || []).filter(b => b.type === 'tool_use').length === 0) {
+      _aiAddMsg('(sense resposta)', 'ai-e');
+    }
+  } catch (err) {
+    _aiAddMsg('Error de xarxa: ' + err.message, 'ai-e');
+  }
+}
+
+let _aiVoiceRec = null;
+
+function initAI() {
+  const btnAI    = document.getElementById('btnAI');
+  const aiPanel  = document.getElementById('aiPanel');
+  const keyInput = document.getElementById('aiKeyInput');
+  const keySave  = document.getElementById('aiKeySave');
+  const textIn   = document.getElementById('aiTextInput');
+  const sendBtn  = document.getElementById('aiSendBtn');
+  const voiceBtn = document.getElementById('aiVoiceBtn');
+
+  if (!btnAI) return;
+
+  // Load saved key
+  const saved = localStorage.getItem('ai_api_key');
+  if (saved && keyInput) keyInput.placeholder = '•••••• (guardada)';
+
+  btnAI.addEventListener('click', () => {
+    const open = aiPanel.style.display !== 'none' && aiPanel.style.display !== '';
+    aiPanel.style.display = open ? 'none' : 'block';
+    btnAI.classList.toggle('active', !open);
+  });
+
+  keySave?.addEventListener('click', () => {
+    const val = keyInput.value.trim();
+    if (val) {
+      localStorage.setItem('ai_api_key', val);
+      keyInput.value = '';
+      keyInput.placeholder = '•••••• (guardada)';
+      _aiAddMsg('✓ Clau guardada al navegador.', 'ai-a');
+    }
+  });
+
+  sendBtn?.addEventListener('click', () => {
+    const txt = textIn.value.trim();
+    textIn.value = '';
+    sendAICommand(txt);
+  });
+
+  textIn?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      const txt = textIn.value.trim();
+      textIn.value = '';
+      sendAICommand(txt);
+    }
+  });
+
+  // Voice input (Web Speech API)
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRec && voiceBtn) {
+    _aiVoiceRec = new SpeechRec();
+    _aiVoiceRec.lang = 'ca-ES';
+    _aiVoiceRec.interimResults = false;
+    _aiVoiceRec.maxAlternatives = 1;
+
+    _aiVoiceRec.onresult = e => {
+      const txt = e.results[0][0].transcript;
+      if (textIn) textIn.value = txt;
+      voiceBtn.classList.remove('recording');
+      sendAICommand(txt);
+      if (textIn) textIn.value = '';
+    };
+    _aiVoiceRec.onerror = () => voiceBtn.classList.remove('recording');
+    _aiVoiceRec.onend   = () => voiceBtn.classList.remove('recording');
+
+    voiceBtn.addEventListener('click', () => {
+      if (voiceBtn.classList.contains('recording')) {
+        _aiVoiceRec.stop();
+        voiceBtn.classList.remove('recording');
+      } else {
+        _aiVoiceRec.start();
+        voiceBtn.classList.add('recording');
+      }
+    });
+  } else if (voiceBtn) {
+    voiceBtn.style.display = 'none';
+  }
+}
+
 // Render loop
 // ─────────────────────────────────────────────
 function animate() {
@@ -2616,4 +2960,5 @@ function animate() {
 // ─────────────────────────────────────────────
 init();
 setupUI();
+initAI();
 animate();

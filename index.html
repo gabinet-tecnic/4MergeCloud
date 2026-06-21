@@ -368,6 +368,57 @@
     }
     #annotatePanel input[type=range] { width: 80px; vertical-align: middle; }
 
+    /* AI Assistant panel */
+    #btnAI {
+      background: #1a2a4a;
+      border-color: #3a6aaa;
+      color: #88ccff;
+    }
+    #btnAI:hover { background: #2a3a6a; }
+    #btnAI.active { background: #2a4a8a; border-color: #5a9aff; color: #ccecff; }
+    #aiPanel {
+      display: none;
+      background: #0d1d2d;
+      border: 1px solid #1a4a7a;
+      border-radius: 4px;
+      padding: 6px;
+      margin: 3px 0;
+    }
+    #aiKeyRow {
+      display: flex; gap: 3px; margin-bottom: 5px;
+    }
+    #aiKeyInput {
+      flex: 1; background: #1a2a3a; color: #aaa;
+      border: 1px solid #2a4a6a; border-radius: 3px;
+      padding: 2px 5px; font-size: 10px;
+    }
+    #aiKeySave {
+      background: #1a4a1a; color: #8f8; border: 1px solid #2a7a2a;
+      border-radius: 3px; padding: 2px 6px; cursor: pointer; font-size: 10px;
+      flex-shrink: 0;
+    }
+    #aiMessages {
+      max-height: 110px; overflow-y: auto;
+      margin-bottom: 5px; font-size: 10px; line-height: 1.5;
+    }
+    .ai-u { color: #88ccff; margin: 1px 0; }
+    .ai-a { color: #88eebb; margin: 1px 0; }
+    .ai-x { color: #ff9966; margin: 1px 0; font-style: italic; }
+    .ai-e { color: #ff6666; margin: 1px 0; }
+    #aiInputRow { display: flex; gap: 3px; }
+    #aiTextInput {
+      flex: 1; background: #1a2a3a; color: #eee;
+      border: 1px solid #2a5a8a; border-radius: 3px;
+      padding: 3px 5px; font-size: 11px;
+    }
+    #aiVoiceBtn, #aiSendBtn {
+      background: #1a3a6a; color: #adf;
+      border: 1px solid #2a6aaa; border-radius: 3px;
+      padding: 3px 7px; cursor: pointer; font-size: 12px; flex-shrink: 0;
+    }
+    #aiVoiceBtn:hover, #aiSendBtn:hover { background: #2a4a8a; }
+    #aiVoiceBtn.recording { background: #7a1a1a; border-color: #cc3333; color: #faa; }
+
     /* Auto-align panel */
     #autoAlignPanel {
       display: none;
@@ -485,6 +536,21 @@
     <div class="sep"></div>
     <button id="toggleMeasure">&#128207; Measure mode</button>
     <button id="clearMeasures">&#128465; Clear measures</button>
+
+    <div class="sep"></div>
+    <button id="btnAI">&#129302; AI Assistant</button>
+    <div id="aiPanel">
+      <div id="aiKeyRow">
+        <input type="password" id="aiKeyInput" placeholder="sk-ant-api03-...">
+        <button id="aiKeySave">&#128190; Save key</button>
+      </div>
+      <div id="aiMessages"></div>
+      <div id="aiInputRow">
+        <input type="text" id="aiTextInput" placeholder="Escriu una ordre..." autocomplete="off">
+        <button id="aiVoiceBtn" title="Veu">&#127908;</button>
+        <button id="aiSendBtn">&#9654;</button>
+      </div>
+    </div>
 
     <div class="sep"></div>
     <button id="merge">&#8659; Merge &amp; download XYZ</button>
