@@ -418,6 +418,13 @@
     }
     #aiVoiceBtn:hover, #aiSendBtn:hover { background: #2a4a8a; }
     #aiVoiceBtn.recording { background: #7a1a1a; border-color: #cc3333; color: #faa; }
+    .ai-thinking { animation: ai-blink 1s infinite; }
+    @keyframes ai-blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    #aiClearBtn {
+      background: none; border: none; color: #446; cursor: pointer;
+      font-size: 10px; padding: 0; float: right; margin-bottom: 2px;
+    }
+    #aiClearBtn:hover { color: #88a; }
 
     /* Auto-align panel */
     #autoAlignPanel {
@@ -544,6 +551,7 @@
         <input type="password" id="aiKeyInput" placeholder="sk-ant-api03-...">
         <button id="aiKeySave">&#128190; Save key</button>
       </div>
+      <button id="aiClearBtn">&#128465; netejar</button>
       <div id="aiMessages"></div>
       <div id="aiInputRow">
         <input type="text" id="aiTextInput" placeholder="Escriu una ordre..." autocomplete="off">

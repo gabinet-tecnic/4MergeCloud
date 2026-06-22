@@ -827,29 +827,48 @@ async function applyICP() {
   badge.style.display='block';
   badge.textContent='⏳ ICP — preparant...';
 
-  const {R,t,error}=await runICP(src,tgt,60,(it,max,err)=>{
-    badge.textContent=`⏳ ICP iteració ${it}/${max} — error: ${err.toFixed(4)} m`;
-  });
+  try {
+    const {R,t,error}=await runICP(src,tgt,60,(it,max,err)=>{
+      if(isFinite(err)) badge.textContent=`⏳ ICP iteració ${it}/${max} — error: ${err.toFixed(4)} m`;
+    });
 
-  badge.style.display='none';
-  badge.textContent='⏳ Loading file...';
+    badge.style.display='none';
+    badge.textContent='⏳ Loading file...';
 
-  pushUndo(src);
-  // Aplica el transform acumulat al núvol sencer via Matrix4
-  const mat=new THREE.Matrix4().set(
-    R[0][0],R[0][1],R[0][2],t[0],
-    R[1][0],R[1][1],R[1][2],t[1],
-    R[2][0],R[2][1],R[2][2],t[2],
-    0,0,0,1
-  );
-  src.applyMatrix4(mat);
-  src.updateMatrixWorld(true);
-  selectCloud(src);
+    // Valida que R i t no continguin NaN/Infinity
+    const vals=[R[0][0],R[0][1],R[0][2],R[1][0],R[1][1],R[1][2],R[2][0],R[2][1],R[2][2],t[0],t[1],t[2]];
+    if(vals.some(v=>!isFinite(v))){
+      alert(window.APP_LANG==='en'
+        ?'ICP failed: clouds are too far apart or not enough overlapping points. Try manual alignment first.'
+        :'ICP fallat: els núvols estan massa separats o no hi ha prou punts en comú. Fes una alineació manual prèvia.');
+      return;
+    }
 
-  const msg=window.APP_LANG==='en'
-    ?`ICP finished.\nFinal error: ${error.toFixed(4)} m\n(Undo available)`
-    :`ICP acabat.\nError final: ${error.toFixed(4)} m\n(Undo disponible)`;
-  alert(msg);
+    pushUndo(src);
+    const mat=new THREE.Matrix4().set(
+      R[0][0],R[0][1],R[0][2],t[0],
+      R[1][0],R[1][1],R[1][2],t[1],
+      R[2][0],R[2][1],R[2][2],t[2],
+      0,0,0,1
+    );
+    src.applyMatrix4(mat);
+    src.updateMatrixWorld(true);
+    selectCloud(src);
+
+    const errTxt = isFinite(error) ? error.toFixed(4) : '—';
+    const msg=window.APP_LANG==='en'
+      ?`ICP finished.\nFinal error: ${errTxt} m\n(Undo available)`
+      :`ICP acabat.\nError final: ${errTxt} m\n(Undo disponible)`;
+    alert(msg);
+
+  } catch(err) {
+    badge.style.display='none';
+    badge.textContent='⏳ Loading file...';
+    console.error('ICP error:', err);
+    alert(window.APP_LANG==='en'
+      ?`ICP error: ${err.message}. Try manual alignment first.`
+      :`Error ICP: ${err.message}. Fes una alineació manual prèvia.`);
+  }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Transform confirm badge ───────────────────────────────────────────────────
@@ -2594,72 +2613,73 @@ function onMouseWheel(event) {
 const AI_TOOLS = [
   {
     name: 'change_view',
-    description: 'Change the 3D viewer camera to a preset view angle.',
+    description: 'Change the 3D viewer camera to a preset view. Use for: "vista de dalt/planta/top/desde arriba", "vista frontal/de davant/de front", "vista 3D/perspectiva", "vista lateral dreta/droit", "vista lateral esquerra/izquierda", "vista posterior/darrere/atrás".',
     input_schema: {
       type: 'object',
       properties: {
         view: { type: 'string', enum: ['3d','top','front','back','right','left'],
-                description: '3d=perspective, top=top-down plan, front=front elevation, back=rear, right=right side, left=left side' }
+                description: '3d=perspective view, top=plan view from above, front=front elevation, back=rear elevation, right=right side elevation, left=left side elevation' }
       },
       required: ['view']
     }
   },
   {
     name: 'set_transform_mode',
-    description: 'Activate move (translate) or rotate mode for the selected cloud.',
+    description: 'Activate move or rotate mode for the selected cloud. Use for: "mou el núvol/mueve la nube/move cloud", "activa el moviment/activa traslació", "rota el núvol/gira la nube/rotate".',
     input_schema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['translate','rotate'] }
+        mode: { type: 'string', enum: ['translate','rotate'], description: 'translate=move/moure, rotate=girar/rotar' }
       },
       required: ['mode']
     }
   },
   {
     name: 'apply_noise_filter',
-    description: 'Remove statistical outlier (noise) points from the selected or first cloud.',
+    description: 'Remove outlier / noise points from the cloud. Use for: "elimina el soroll/elimina ruido/remove noise", "neteja el núvol/limpia la nube", "filtre estadístic/filtro estadístico", "esborra punts aïllats/puntos aislados".',
     input_schema: {
       type: 'object',
       properties: {
-        sigma: { type: 'number', description: '1.5=very aggressive, 2.0=normal, 3.0=conservative' },
-        k: { type: 'number', description: 'Number of nearest neighbours (default 10)' }
+        sigma: { type: 'number', description: 'Aggressiveness: 1.5=molt agressiu, 2.0=normal (default), 3.0=conservador' },
+        k: { type: 'number', description: 'Number of nearest neighbours to consider (default 10)' }
       }
     }
   },
   {
     name: 'apply_icp_alignment',
-    description: 'Run ICP fine alignment to register the selected cloud to the reference cloud. Requires approximate manual pre-alignment first.',
+    description: 'Fine-tune alignment between two clouds using ICP algorithm. Use for: "alineació fina/ICP/ajusta l\'alineació/afina alineació/alinea con precisión". Note: requires approximate manual alignment first.',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'create_clipping_box',
-    description: 'Create a clipping box around the selected cloud for cropping.',
+    description: 'Create a clipping/crop box around the cloud. Use for: "crea una caixa de tall/crea caja de corte/clipping box/crea una caixa per retallar".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'apply_clip_permanent',
-    description: 'Apply the clipping box permanently (crop and discard points outside the box).',
+    description: 'Apply the clipping box permanently, deleting points outside it. Use for: "aplica el tall/aplica el corte/retalla/crop/aplica la caixa de tall".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'remove_clipping_box',
-    description: 'Remove the current clipping box without applying the crop.',
+    description: 'Remove the clipping box without applying the crop. Use for: "elimina la caixa/elimina el recuadro/treu la caixa de tall".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'start_erase_tool',
-    description: 'Activate the erase tool so the user can delete points by drawing a rectangle or freehand shape.',
+    description: 'Activate the erase tool to delete points by drawing a shape. Use for: "esborra punts/borra puntos/erase points", "eina d\'esborrat/herramienta de borrado", "esborra amb rectangle/esborra lliure".',
     input_schema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['rect','lasso'], description: 'rect=rectangle drag, lasso=freehand' }
+        mode: { type: 'string', enum: ['rect','lasso'],
+                description: 'rect=rectangle selection (default), lasso=freehand drawing' }
       },
       required: ['mode']
     }
   },
   {
     name: 'toggle_annotation',
-    description: 'Start or stop the drawing/annotation overlay on the viewport.',
+    description: 'Enable or disable the drawing/annotation overlay. Use for: "dibuixa/dibuja/draw", "activa anotació/activa dibuix", "marca sobre la vista/marca sobre el núvol".',
     input_schema: {
       type: 'object',
       properties: {
@@ -2670,22 +2690,22 @@ const AI_TOOLS = [
   },
   {
     name: 'undo_last_action',
-    description: 'Undo the last action (erase, noise filter, clip, etc.).',
+    description: 'Undo the last operation. Use for: "desfés/deshacer/undo/ctrl+z".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'merge_and_download',
-    description: 'Merge all loaded clouds into one and download the result as an XYZ file.',
+    description: 'Merge all clouds into one and download as XYZ file. Use for: "fusiona/merge/uneix els núvols/descàrrega el resultat/exporta XYZ".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'export_section_dxf',
-    description: 'Export the current clipping section as a DXF file.',
+    description: 'Export the current section/clip as a DXF CAD file. Use for: "exporta DXF/exporta la secció/secció en DXF/exporta el tall".',
     input_schema: { type: 'object', properties: {} }
   },
   {
     name: 'get_app_state',
-    description: 'Get the current state of the application: clouds loaded, selected cloud, number of points, etc.',
+    description: 'Report the current state: clouds loaded, selected cloud, number of points. Use for: "quins núvols hi ha?/quants punts?/estat de l\'app/qué hay cargado?".',
     input_schema: { type: 'object', properties: {} }
   }
 ];
@@ -2780,6 +2800,24 @@ async function _executeAITool(name, input) {
   }
 }
 
+const _aiHistory = []; // conversa persistent dins la sessió
+
+const _aiToolLabels = {
+  change_view:         'Canviant vista',
+  set_transform_mode:  'Activant mode de transformació',
+  apply_noise_filter:  'Aplicant filtre de soroll',
+  apply_icp_alignment: 'Executant ICP',
+  create_clipping_box: 'Creant caixa de tall',
+  apply_clip_permanent:'Aplicant tall permanent',
+  remove_clipping_box: 'Eliminant caixa de tall',
+  start_erase_tool:    'Activant eina d\'esborrat',
+  toggle_annotation:   'Mode de dibuix',
+  undo_last_action:    'Desfent acció',
+  merge_and_download:  'Fusionant i descarregant',
+  export_section_dxf:  'Exportant secció DXF',
+  get_app_state:       'Consultant estat'
+};
+
 function _aiAddMsg(text, cls) {
   const box = document.getElementById('aiMessages');
   if (!box) return;
@@ -2788,23 +2826,58 @@ function _aiAddMsg(text, cls) {
   d.textContent = text;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+  return d;
+}
+
+function _aiSetThinking(on) {
+  const box = document.getElementById('aiMessages');
+  if (!box) return;
+  let dot = box.querySelector('.ai-thinking');
+  if (on && !dot) {
+    dot = document.createElement('div');
+    dot.className = 'ai-x ai-thinking';
+    dot.textContent = '⏳ …';
+    box.appendChild(dot);
+    box.scrollTop = box.scrollHeight;
+  } else if (!on && dot) {
+    dot.remove();
+  }
 }
 
 async function sendAICommand(text) {
   const apiKey = localStorage.getItem('ai_api_key');
   if (!apiKey) {
-    _aiAddMsg('⚠ Cal guardar la clau API primer (sk-ant-...).', 'ai-e');
+    _aiAddMsg('⚠ Cal guardar la clau API primer.', 'ai-e');
     return;
   }
   if (!text.trim()) return;
 
-  _aiAddMsg('▶ ' + text, 'ai-u');
+  _aiAddMsg('Tu: ' + text, 'ai-u');
+  _aiHistory.push({ role: 'user', content: text });
+  // Limita historial a 10 missatges
+  if (_aiHistory.length > 10) _aiHistory.splice(0, _aiHistory.length - 10);
+
+  _aiSetThinking(true);
 
   const state = _aiGetState();
-  const systemPrompt = `Ets l'assistent de l'app 4 Merge Cloud, un visor web de núvols de punts 3D (XYZ/PLY).
-Estat actual: ${JSON.stringify(state)}.
-Interpreta les ordres de l'usuari (en català, castellà o anglès) i crida les funcions apropiades.
-Pots cridar múltiples eines en seqüència si cal. Respon de forma molt breu en l'idioma de l'usuari.`;
+  const cloudDesc = state.clouds.length === 0
+    ? 'No hi ha núvols carregats.'
+    : state.clouds.map(c => `"${c.name}" (${c.points.toLocaleString()} punts)${c.selected ? ' [SELECCIONAT]' : ''}`).join(', ');
+
+  const systemPrompt = `Ets l'assistent de l'app "4 Merge Cloud", un visor web de núvols de punts 3D per a arquitectes i enginyers.
+
+ESTAT ACTUAL DE L'APP:
+- Núvols carregats: ${cloudDesc}
+- Mode actiu: ${state.currentMode}
+- Caixa de tall: ${state.hasClipBox ? 'activa' : 'no activa'}
+
+INSTRUCCIONS:
+- Interpreta les ordres de l'usuari en CATALÀ, castellà o anglès.
+- SEMPRE crida una eina quan l'ordre sigui una acció sobre l'app. NO responguis només amb text si l'acció es pot executar.
+- Si no entens l'ordre, pregunta breument en català.
+- Respon sempre en l'idioma que fa servir l'usuari.
+- Respostes molt breus (1-2 frases màxim).
+- Quan executis una acció, confirma-la breument (p.ex: "Fet." o "Vista de planta activada.").`;
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -2816,39 +2889,58 @@ Pots cridar múltiples eines en seqüència si cal. Respon de forma molt breu en
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'claude-sonnet-4-6',
         max_tokens: 512,
         system: systemPrompt,
-        messages: [{ role: 'user', content: text }],
-        tools: AI_TOOLS
+        messages: _aiHistory.slice(),
+        tools: AI_TOOLS,
+        tool_choice: { type: 'auto' }
       })
     });
 
+    _aiSetThinking(false);
+
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      _aiAddMsg('Error API: ' + (err.error?.message || resp.status), 'ai-e');
+      _aiAddMsg('Error API: ' + (err.error?.message || resp.statusText), 'ai-e');
+      _aiHistory.pop(); // treu el missatge que ha fallat
       return;
     }
 
     const data = await resp.json();
-    let hasText = false;
+    const assistantContent = data.content || [];
+    let assistantText = '';
+    const toolResults = [];
 
-    for (const block of (data.content || [])) {
+    for (const block of assistantContent) {
       if (block.type === 'text' && block.text.trim()) {
-        _aiAddMsg(block.text.trim(), 'ai-a');
-        hasText = true;
+        assistantText = block.text.trim();
       } else if (block.type === 'tool_use') {
-        _aiAddMsg('⚙ ' + block.name + '…', 'ai-x');
+        const label = _aiToolLabels[block.name] || block.name;
+        _aiAddMsg('⚙ ' + label + '…', 'ai-x');
         const result = await _executeAITool(block.name, block.input || {});
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         _aiAddMsg('✓ ' + result, 'ai-a');
       }
     }
 
-    if (!hasText && (data.content || []).filter(b => b.type === 'tool_use').length === 0) {
-      _aiAddMsg('(sense resposta)', 'ai-e');
+    if (assistantText) _aiAddMsg(assistantText, 'ai-a');
+
+    // Afegeix la resposta de l'assistent a l'historial
+    _aiHistory.push({ role: 'assistant', content: assistantContent });
+
+    // Si hi ha resultats d'eines, afegeix-los a l'historial
+    if (toolResults.length > 0) {
+      _aiHistory.push({ role: 'user', content: toolResults });
+    }
+
+    if (!assistantText && toolResults.length === 0) {
+      _aiAddMsg('No entenc l\'ordre. Pots reformular-la?', 'ai-e');
     }
   } catch (err) {
-    _aiAddMsg('Error de xarxa: ' + err.message, 'ai-e');
+    _aiSetThinking(false);
+    _aiAddMsg('Error: ' + err.message, 'ai-e');
+    _aiHistory.pop();
   }
 }
 
@@ -2862,6 +2954,7 @@ function initAI() {
   const textIn   = document.getElementById('aiTextInput');
   const sendBtn  = document.getElementById('aiSendBtn');
   const voiceBtn = document.getElementById('aiVoiceBtn');
+  const clearBtn = document.getElementById('aiClearBtn');
 
   if (!btnAI) return;
 
@@ -2873,6 +2966,12 @@ function initAI() {
     const open = aiPanel.style.display !== 'none' && aiPanel.style.display !== '';
     aiPanel.style.display = open ? 'none' : 'block';
     btnAI.classList.toggle('active', !open);
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    const box = document.getElementById('aiMessages');
+    if (box) box.innerHTML = '';
+    _aiHistory.length = 0;
   });
 
   keySave?.addEventListener('click', () => {
